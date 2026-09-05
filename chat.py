@@ -10,6 +10,8 @@ class ChatGPT(Session):
         #self.device_id = kwargs.get('device_id',None)
         self.message = kwargs.get('message',None)
         self.message_id = kwargs.get('message_id',None)
+        self.conversation_id = kwargs.get('conversation_id', None)
+        self.parent_message_id = kwargs.get('parent_message_id', "client-created-root")
         super().__init__()
     
     def query_gpt(self):
@@ -30,7 +32,7 @@ class ChatGPT(Session):
                     "metadata": { "selected_github_repos": [], "selected_all_github_repos": False, "serialization_metadata": { "custom_symbol_offsets": [] } }
                 }
             ],
-            "parent_message_id": "client-created-root",
+            "parent_message_id": self.parent_message_id,
             "model": "auto",
             "timezone_offset_min": -60,
             "timezone": "Africa/Lagos",
@@ -43,6 +45,9 @@ class ChatGPT(Session):
             "paragen_cot_summary_display_override": "allow"
         }
         
+        if self.conversation_id:
+            json_data["conversation_id"] = self.conversation_id
+            
         return json_data
     
     def get_cookies():
@@ -106,6 +111,20 @@ class ChatGPT(Session):
                     except json.JSONDecodeError:
                         continue
 
+                    if isinstance(data, dict):
+                        if "conversation_id" in data:
+                            self.conversation_id = data["conversation_id"]
+                        
+                        if data.get("type") == "message_marker" and "message_id" in data:
+                            self.parent_message_id = data["message_id"]
+                        
+                        # Fallback for parent_message_id from message object
+                        v = data.get("v")
+                        if isinstance(v, dict) and "message" in v:
+                            msg = v["message"]
+                            if msg.get("author", {}).get("role") == "assistant":
+                                self.parent_message_id = msg.get("id")
+
                     # Skip known metadata
                     if (
                         not isinstance(data, dict)
@@ -134,11 +153,15 @@ class ChatGPT(Session):
     
     def reply_chat(self,text):
         
+        self.get_requirements()
         json_data = self.get_chat_payload(text)
         headers = self.get_headers()
         
         response = self.session.post('https://chatgpt.com/backend-anon/conversation', headers=headers, json=json_data,stream=True,impersonate="chrome")
         
+        if not response.ok:
+            return
+
         for chunk in self.decode_stream(response):
             # print(chunk, end="", flush=True)
             yield chunk
