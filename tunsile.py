@@ -320,7 +320,7 @@ def get_func_map() -> FloatMap:
 
 
 def process_turnstile(dx: str, p: str) -> str:
-    
+
     tokens = get_turnstile_token(dx, p)
     res = ""
     token_list = json.loads(tokens)
@@ -343,9 +343,8 @@ def process_turnstile(dx: str, p: str) -> str:
                 f(*t)
             else:
                 pass
-                print(f"Warning: No function found for key {e}")
         except Exception as exc:
-            raise Exception(f"Error processing token {token}: {exc}")
+            pass
             # print(f"Error processing token {token}: {exc}")
-    
+
     return res

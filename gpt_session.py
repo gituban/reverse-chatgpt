@@ -37,7 +37,7 @@ class Session:
         }
 
         headers = {
-            'User-Agent': 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:138.0) Gecko/20100101 Firefox/138.0',
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
             'Accept': '*/*',
             'Accept-Language': 'en-US,en;q=0.5',
             # 'Accept-Encoding': 'gzip, deflate, br, zstd',
@@ -62,7 +62,6 @@ class Session:
 
         # # Send POST request with session cookies and headers
         post_response = self.session.post(post_url, headers=headers,json=payload)
-        #print("POST status:", post_response.status_code)
         data = post_response.json()
             
         self.requirements = post_response.json()

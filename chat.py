@@ -55,18 +55,16 @@ class ChatGPT(Session):
     
     def get_headers(self):
         return {
-        'User-Agent': 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:138.0) Gecko/20100101 Firefox/138.0',
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
         'Accept': 'text/event-stream',
         'Accept-Language': 'en-US,en;q=0.5',
-        # 'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Referer': 'https://chatgpt.com/',
         'OAI-Language': 'en-US',
         'OAI-Device-Id': self.device_id,
-        'OAI-Client-Version': self.build_number,#'prod-8018bc0b02e3620f03fac2a740e6fb888f6c58ee',
+        'OAI-Client-Version': self.build_number,
         'Content-Type': 'application/json',
-        'OAI-Echo-Logs': '0,2662,1,11842,0,647956,1,658136,0,1596244,1,1639999',
         'OpenAI-Sentinel-Chat-Requirements-Token': self.sentinel.get("token"),
-        #'OpenAI-Sentinel-Turnstile-Token': self.sentinel.get("turnstile"),
+        'OpenAI-Sentinel-Turnstile-Token': self.sentinel.get("turnstile"),
         'OpenAI-Sentinel-Proof-Token': self.sentinel.get("proof"),
         'Origin': 'https://chatgpt.com',
         'Connection': 'keep-alive',
@@ -74,8 +72,6 @@ class ChatGPT(Session):
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Site': 'same-origin',
         'Priority': 'u=0',
-        # Requests doesn't support trailers
-        # 'TE': 'trailers',
     }
         
 
