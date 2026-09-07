@@ -156,6 +156,15 @@ def github_workflow_run(workflow, repo="", ref=""):
     return run_command(command)
 
 
+def github_workflow_status(run_id, repo=""):
+    command = f"gh run view {run_id}"
+
+    if repo:
+        command += f" --repo {repo}"
+
+    return run_command(command)
+
+
 TOOLS = {
     "list_files": list_files,
     "read_file": read_file,
@@ -169,6 +178,7 @@ TOOLS = {
     "github_workflows": github_workflows,
     "github_workflow_runs": github_workflow_runs,
     "github_workflow_run": github_workflow_run,
+    "github_workflow_status": github_workflow_status,
 }
 
 
