@@ -122,6 +122,52 @@ def git_log():
     return run_command("git log --oneline -10")
 
 
+def git_push(remote="", branch=""):
+    remote = remote.strip()
+    branch = branch.strip()
+
+    try:
+        if not branch:
+            current = subprocess.run(
+                ["git", "branch", "--show-current"],
+                text=True,
+                capture_output=True,
+            )
+
+            if current.returncode != 0:
+                return (
+                    f"EXIT_CODE: {current.returncode}\n"
+                    f"{current.stderr.strip() or '(no output)'}"
+                )
+
+            branch = current.stdout.strip()
+
+        if not branch:
+            return "ERROR: unable to determine current branch"
+
+        if not remote:
+            remote = "origin"
+
+        result = subprocess.run(
+            ["git", "push", remote, branch],
+            text=True,
+            capture_output=True,
+        )
+
+        output = result.stdout
+
+        if result.stderr:
+            output += "\n" + result.stderr
+
+        return (
+            f"EXIT_CODE: {result.returncode}\n"
+            f"{output.strip() or '(no output)'}"
+        )
+
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 def git_commit(message):
     message = message.strip()
 
@@ -344,6 +390,7 @@ TOOLS = {
     "git_log": git_log,
     "git_create_branch": git_create_branch,
     "git_commit": git_commit,
+    "git_push": git_push,
     "github_repo_info": github_repo_info,
     "github_workflows": github_workflows,
     "github_workflow_runs": github_workflow_runs,
