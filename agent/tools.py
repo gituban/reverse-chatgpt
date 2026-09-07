@@ -81,6 +81,69 @@ def write_file(path, content):
         return f"ERROR: {e}"
 
 
+def detect_project(path="."):
+    base = Path(path).resolve()
+
+    if not base.exists():
+        return f"ERROR: path does not exist: {path}"
+
+    if not base.is_dir():
+        return f"ERROR: not a directory: {path}"
+
+    files = {item.name for item in base.iterdir() if item.is_file()}
+
+    project_type = "unknown"
+    build_system = "unknown"
+    test_command = ""
+
+    if "gradlew" in files or "build.gradle" in files or "build.gradle.kts" in files:
+        project_type = "java_or_android"
+        build_system = "gradle"
+        test_command = "./gradlew test"
+
+    elif "pom.xml" in files:
+        project_type = "java"
+        build_system = "maven"
+        test_command = "mvn test"
+
+    elif "package.json" in files:
+        project_type = "node"
+        build_system = "npm"
+        test_command = "npm test"
+
+    elif "pyproject.toml" in files:
+        project_type = "python"
+        build_system = "python"
+        test_command = "pytest"
+
+    elif "pytest.ini" in files or "tox.ini" in files:
+        project_type = "python"
+        build_system = "pytest"
+        test_command = "pytest"
+
+    elif "requirements.txt" in files:
+        project_type = "python"
+        build_system = "pip"
+        test_command = "pytest"
+
+    elif "Cargo.toml" in files:
+        project_type = "rust"
+        build_system = "cargo"
+        test_command = "cargo test"
+
+    elif "go.mod" in files:
+        project_type = "go"
+        build_system = "go"
+        test_command = "go test ./..."
+
+    return (
+        f"PROJECT_PATH: {base}\n"
+        f"PROJECT_TYPE: {project_type}\n"
+        f"BUILD_SYSTEM: {build_system}\n"
+        f"TEST_COMMAND: {test_command or '(unknown)'}"
+    )
+
+
 def run_test(command, timeout="120"):
     command = command.strip()
 
@@ -506,6 +569,7 @@ TOOLS = {
     "search_files": search_files,
     "write_file": write_file,
     "run_command": run_command,
+    "detect_project": detect_project,
     "run_test": run_test,
     "git_status": git_status,
     "git_diff": git_diff,
