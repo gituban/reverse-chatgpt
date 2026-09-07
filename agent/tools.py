@@ -81,6 +81,65 @@ def write_file(path, content):
         return f"ERROR: {e}"
 
 
+def run_test(command, timeout="120"):
+    command = command.strip()
+
+    if not command:
+        return "ERROR: test command cannot be empty"
+
+    try:
+        timeout_seconds = int(timeout)
+    except ValueError:
+        return "ERROR: timeout must be an integer"
+
+    if timeout_seconds <= 0:
+        return "ERROR: timeout must be greater than 0"
+
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+
+        status = "PASS" if result.returncode == 0 else "FAIL"
+
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+
+        return (
+            f"TEST_RESULT: {status}\n"
+            f"EXIT_CODE: {result.returncode}\n"
+            f"COMMAND: {command}\n"
+            f"STDOUT:\n{stdout or '(empty)'}\n"
+            f"STDERR:\n{stderr or '(empty)'}"
+        )
+
+    except subprocess.TimeoutExpired as e:
+        stdout = e.stdout or ""
+        stderr = e.stderr or ""
+
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+
+        return (
+            "TEST_RESULT: TIMEOUT\n"
+            f"EXIT_CODE: -1\n"
+            f"COMMAND: {command}\n"
+            f"TIMEOUT: {timeout_seconds}\n"
+            f"STDOUT:\n{stdout or '(empty)'}\n"
+            f"STDERR:\n{stderr or '(empty)'}"
+        )
+
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 def run_command(command):
     try:
         result = subprocess.run(
@@ -447,6 +506,7 @@ TOOLS = {
     "search_files": search_files,
     "write_file": write_file,
     "run_command": run_command,
+    "run_test": run_test,
     "git_status": git_status,
     "git_diff": git_diff,
     "git_log": git_log,
