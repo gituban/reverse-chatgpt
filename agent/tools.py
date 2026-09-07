@@ -487,6 +487,195 @@ def github_workflow_status(run_id, repo=""):
 
 
 
+
+def github_repair_loop(
+    repo="",
+    branch="",
+    workflow="agent-build-test.yml",
+    max_iterations="3",
+    wait_timeout="300",
+):
+    """
+    Bounded GitHub Actions repair-loop coordinator.
+
+    This coordinator observes workflow results and returns structured
+    repair context. It deliberately does not modify source code itself.
+    """
+    import json
+    import subprocess
+    import time
+
+    try:
+        max_iter = int(max_iterations)
+    except ValueError:
+        return "ERROR: max_iterations must be numeric"
+
+    try:
+        timeout = int(wait_timeout)
+    except ValueError:
+        return "ERROR: wait_timeout must be numeric"
+
+    if max_iter < 1 or max_iter > 10:
+        return "ERROR: max_iterations must be between 1 and 10"
+
+    if timeout < 30 or timeout > 1800:
+        return "ERROR: wait_timeout must be between 30 and 1800 seconds"
+
+    if not repo:
+        repo_result = subprocess.run(
+            ["gh", "repo", "view", "--json", "nameWithOwner"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        if repo_result.returncode != 0:
+            return (
+                "ERROR: unable to determine repository\n"
+                + repo_result.stderr.strip()
+            )
+
+        try:
+            repo = json.loads(repo_result.stdout)["nameWithOwner"]
+        except Exception as exc:
+            return f"ERROR: invalid repository metadata: {exc}"
+
+    if not branch:
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        if branch_result.returncode != 0:
+            return "ERROR: unable to determine current branch"
+
+        branch = branch_result.stdout.strip()
+
+    if not branch:
+        return "ERROR: branch is required"
+
+    # Find the latest workflow run belonging to this exact branch.
+    result = subprocess.run(
+        [
+            "gh", "run", "list",
+            "--repo", repo,
+            "--workflow", workflow,
+            "--branch", branch,
+            "--limit", "1",
+            "--json",
+            "databaseId,status,conclusion,url,name,headBranch,headSha",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    if result.returncode != 0:
+        return (
+            "ERROR: unable to list workflow runs\n"
+            + result.stderr.strip()
+        )
+
+    try:
+        runs = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return f"ERROR: invalid workflow JSON\n{result.stdout}"
+
+    if not runs:
+        return json.dumps({
+            "status": "NO_RUN",
+            "repo": repo,
+            "branch": branch,
+            "workflow": workflow,
+            "max_iterations": max_iter,
+        }, indent=2)
+
+    run = runs[0]
+
+    run_id = run.get("databaseId")
+
+    if not run_id:
+        return "ERROR: workflow run has no databaseId"
+
+    # Wait for an active run to finish.
+    deadline = time.time() + timeout
+
+    while run.get("status") not in ("completed", "cancelled"):
+        if time.time() >= deadline:
+            return json.dumps({
+                "status": "TIMEOUT",
+                "repo": repo,
+                "branch": branch,
+                "workflow": workflow,
+                "run": run,
+            }, indent=2)
+
+        time.sleep(5)
+
+        poll = subprocess.run(
+            [
+                "gh", "run", "view", str(run_id),
+                "--repo", repo,
+                "--json",
+                "databaseId,status,conclusion,url,name,headBranch,headSha",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        if poll.returncode != 0:
+            return (
+                "ERROR: workflow polling failed\n"
+                + poll.stderr.strip()
+            )
+
+        try:
+            run = json.loads(poll.stdout)
+        except json.JSONDecodeError:
+            return f"ERROR: invalid workflow status JSON\n{poll.stdout}"
+
+    conclusion = run.get("conclusion")
+
+    result_data = {
+        "status": "PASS" if conclusion == "success" else "FAIL",
+        "repo": repo,
+        "branch": branch,
+        "workflow": workflow,
+        "run": run,
+        "repair_iteration": 1,
+        "max_iterations": max_iter,
+    }
+
+    if conclusion != "success":
+        failure_result = github_workflow_result(
+            str(run_id),
+            repo=repo,
+            include_logs="true",
+        )
+
+        try:
+            failure_data = json.loads(failure_result)
+        except json.JSONDecodeError:
+            failure_data = {
+                "failed_logs": failure_result,
+            }
+
+        result_data["failure"] = {
+            "conclusion": conclusion,
+            "failed_logs": failure_data.get("failed_logs", ""),
+        }
+
+        result_data["next_action"] = (
+            "READ_FAILURE_LOG_AND_REPAIR"
+        )
+    else:
+        result_data["next_action"] = "DONE"
+
+    return json.dumps(result_data, indent=2, ensure_ascii=False)
+
 def github_workflow_artifacts(run_id, repo="", name=""):
     """List artifacts belonging to a GitHub Actions workflow run."""
     import json
@@ -783,6 +972,7 @@ TOOLS = {
     "github_workflow_wait": github_workflow_wait,
     "github_workflow_result": github_workflow_result,
     "github_workflow_artifacts": github_workflow_artifacts,
+    "github_repair_loop": github_repair_loop,
     "github_workflow_download_artifact": github_workflow_download_artifact,
 }
 
