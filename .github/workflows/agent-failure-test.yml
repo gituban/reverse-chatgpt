@@ -1,7 +1,9 @@
 name: Agent Failure Test
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - ai-agent-mvp
 
 permissions:
   contents: read
