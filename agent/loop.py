@@ -53,6 +53,7 @@ github_workflows(repo)
 github_workflow_runs(repo, limit)
 github_workflow_run(workflow, repo, ref)
 github_workflow_status(run_id, repo)
+github_workflow_wait(run_id, repo, timeout, interval)
 
 When a user asks you to inspect or modify files, use the appropriate tool.
 
@@ -89,6 +90,7 @@ github_workflows(repo)
 github_workflow_runs(repo, limit)
 github_workflow_run(workflow, repo, ref)
 github_workflow_status(run_id, repo)
+github_workflow_wait(run_id, repo, timeout, interval)
 
 Output ONLY the tool call.
 Do not explain.

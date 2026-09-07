@@ -165,6 +165,84 @@ def github_workflow_status(run_id, repo=""):
     return run_command(command)
 
 
+def github_workflow_wait(run_id, repo="", timeout="300", interval="5"):
+    try:
+        timeout_seconds = int(timeout)
+        interval_seconds = int(interval)
+    except ValueError:
+        return "ERROR: timeout and interval must be integers"
+
+    if timeout_seconds <= 0:
+        return "ERROR: timeout must be greater than 0"
+
+    if interval_seconds <= 0:
+        return "ERROR: interval must be greater than 0"
+
+    import json
+    import time
+
+    command = f"gh run view {run_id} --json status,conclusion,name,url"
+
+    if repo:
+        command += f" --repo {repo}"
+
+    started = time.time()
+
+    while True:
+        result = subprocess.run(
+            command,
+            shell=True,
+            text=True,
+            capture_output=True,
+        )
+
+        if result.returncode != 0:
+            output = result.stdout
+
+            if result.stderr:
+                output += "\n" + result.stderr
+
+            return (
+                f"EXIT_CODE: {result.returncode}\n"
+                f"{output[-12000:]}"
+            )
+
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return (
+                "ERROR: invalid JSON returned by gh run view\n"
+                + result.stdout[-12000:]
+            )
+
+        status = data.get("status", "")
+        conclusion = data.get("conclusion")
+
+        print(
+            f"[github_workflow_wait] "
+            f"status={status} conclusion={conclusion}",
+            flush=True,
+        )
+
+        if status == "completed":
+            return (
+                "STATUS: completed\n"
+                f"CONCLUSION: {conclusion}\n"
+                f"NAME: {data.get('name', '')}\n"
+                f"URL: {data.get('url', '')}"
+            )
+
+        if time.time() - started >= timeout_seconds:
+            return (
+                "ERROR: timeout waiting for workflow run\n"
+                f"RUN_ID: {run_id}\n"
+                f"LAST_STATUS: {status}\n"
+                f"LAST_CONCLUSION: {conclusion}"
+            )
+
+        time.sleep(interval_seconds)
+
+
 TOOLS = {
     "list_files": list_files,
     "read_file": read_file,
@@ -179,6 +257,7 @@ TOOLS = {
     "github_workflow_runs": github_workflow_runs,
     "github_workflow_run": github_workflow_run,
     "github_workflow_status": github_workflow_status,
+    "github_workflow_wait": github_workflow_wait,
 }
 
 
