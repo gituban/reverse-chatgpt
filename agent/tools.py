@@ -122,6 +122,48 @@ def git_log():
     return run_command("git log --oneline -10")
 
 
+def git_commit(message):
+    message = message.strip()
+
+    if not message:
+        return "ERROR: commit message cannot be empty"
+
+    try:
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            text=True,
+            capture_output=True,
+        )
+
+        if staged.returncode == 0:
+            return "ERROR: no staged changes to commit"
+
+        if staged.returncode != 1:
+            return (
+                "ERROR: unable to determine staged changes\n"
+                + staged.stderr.strip()
+            )
+
+        result = subprocess.run(
+            ["git", "commit", "-m", message],
+            text=True,
+            capture_output=True,
+        )
+
+        output = result.stdout
+
+        if result.stderr:
+            output += "\n" + result.stderr
+
+        return (
+            f"EXIT_CODE: {result.returncode}\n"
+            f"{output.strip() or '(no output)'}"
+        )
+
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 def git_create_branch(branch):
     branch = branch.strip()
 
@@ -301,6 +343,7 @@ TOOLS = {
     "git_diff": git_diff,
     "git_log": git_log,
     "git_create_branch": git_create_branch,
+    "git_commit": git_commit,
     "github_repo_info": github_repo_info,
     "github_workflows": github_workflows,
     "github_workflow_runs": github_workflow_runs,
