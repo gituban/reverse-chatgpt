@@ -122,6 +122,54 @@ def git_log():
     return run_command("git log --oneline -10")
 
 
+def git_create_branch(branch):
+    branch = branch.strip()
+
+    if not branch:
+        return "ERROR: branch name cannot be empty"
+
+    if any(char in branch for char in [" ", "~", "^", ":", "?", "*", "[", "\\"]):
+        return f"ERROR: invalid branch name: {branch}"
+
+    try:
+        check = subprocess.run(
+            ["git", "check-ref-format", "--branch", branch],
+            text=True,
+            capture_output=True,
+        )
+
+        if check.returncode != 0:
+            return f"ERROR: invalid branch name: {branch}"
+
+        existing = subprocess.run(
+            ["git", "rev-parse", "--verify", f"refs/heads/{branch}"],
+            text=True,
+            capture_output=True,
+        )
+
+        if existing.returncode == 0:
+            return f"ERROR: branch already exists: {branch}"
+
+        result = subprocess.run(
+            ["git", "switch", "-c", branch],
+            text=True,
+            capture_output=True,
+        )
+
+        output = result.stdout
+
+        if result.stderr:
+            output += "\n" + result.stderr
+
+        return (
+            f"EXIT_CODE: {result.returncode}\n"
+            f"{output.strip() or '(no output)'}"
+        )
+
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 def github_repo_info(repo=""):
     if repo:
         command = f"gh repo view {repo} --json nameWithOwner,description,defaultBranchRef,isPrivate,url"
@@ -252,6 +300,7 @@ TOOLS = {
     "git_status": git_status,
     "git_diff": git_diff,
     "git_log": git_log,
+    "git_create_branch": git_create_branch,
     "github_repo_info": github_repo_info,
     "github_workflows": github_workflows,
     "github_workflow_runs": github_workflow_runs,
