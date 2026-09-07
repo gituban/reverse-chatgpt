@@ -48,6 +48,9 @@ run_command(command)
 git_status()
 git_diff()
 git_log()
+github_repo_info(repo)
+github_workflows(repo)
+github_workflow_runs(repo, limit)
 
 When a user asks you to inspect or modify files, use the appropriate tool.
 
@@ -79,6 +82,9 @@ run_command(command)
 git_status()
 git_diff()
 git_log()
+github_repo_info(repo)
+github_workflows(repo)
+github_workflow_runs(repo, limit)
 
 Output ONLY the tool call.
 Do not explain.
@@ -107,7 +113,7 @@ class Agent:
         output = []
 
         for chunk in self.gpt.reply_chat(prompt):
-            if chunk:
+            if isinstance(chunk, str) and chunk:
                 print(chunk, end="", flush=True)
                 output.append(chunk)
 

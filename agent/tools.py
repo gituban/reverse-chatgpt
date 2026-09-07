@@ -122,6 +122,28 @@ def git_log():
     return run_command("git log --oneline -10")
 
 
+def github_repo_info(repo=""):
+    if repo:
+        command = f"gh repo view {repo} --json nameWithOwner,description,defaultBranchRef,isPrivate,url"
+    else:
+        command = "gh repo view --json nameWithOwner,description,defaultBranchRef,isPrivate,url"
+    return run_command(command)
+
+
+def github_workflows(repo=""):
+    command = "gh workflow list"
+    if repo:
+        command += f" --repo {repo}"
+    return run_command(command)
+
+
+def github_workflow_runs(repo="", limit="10"):
+    command = f"gh run list --limit {limit}"
+    if repo:
+        command += f" --repo {repo}"
+    return run_command(command)
+
+
 TOOLS = {
     "list_files": list_files,
     "read_file": read_file,
@@ -131,6 +153,9 @@ TOOLS = {
     "git_status": git_status,
     "git_diff": git_diff,
     "git_log": git_log,
+    "github_repo_info": github_repo_info,
+    "github_workflows": github_workflows,
+    "github_workflow_runs": github_workflow_runs,
 }
 
 
