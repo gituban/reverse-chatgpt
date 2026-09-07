@@ -486,6 +486,133 @@ def github_workflow_status(run_id, repo=""):
 
 
 
+
+def github_workflow_artifacts(run_id, repo="", name=""):
+    """List artifacts belonging to a GitHub Actions workflow run."""
+    import json
+    import subprocess
+
+    if not str(run_id).strip().isdigit():
+        return "ERROR: run_id must be numeric"
+
+    if repo:
+        repo_name = repo
+    else:
+        repo_cmd = subprocess.run(
+            ["gh", "repo", "view", "--json", "nameWithOwner"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if repo_cmd.returncode != 0:
+            return (
+                "ERROR: unable to determine repository\n"
+                + repo_cmd.stderr.strip()
+            )
+        try:
+            repo_name = json.loads(repo_cmd.stdout)["nameWithOwner"]
+        except Exception as exc:
+            return f"ERROR: invalid repository metadata: {exc}"
+
+    endpoint = f"repos/{repo_name}/actions/runs/{run_id}/artifacts"
+
+    if name:
+        endpoint += "?name=" + str(name)
+
+    result = subprocess.run(
+        ["gh", "api", endpoint],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    if result.returncode != 0:
+        return (
+            f"ERROR: artifact lookup failed\n"
+            f"exit_code={result.returncode}\n"
+            f"{result.stderr.strip()}"
+        )
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return f"ERROR: invalid artifact JSON\n{result.stdout}"
+
+    artifacts = []
+
+    for artifact in data.get("artifacts", []):
+        artifacts.append({
+            "id": artifact.get("id"),
+            "name": artifact.get("name"),
+            "size_in_bytes": artifact.get("size_in_bytes"),
+            "expired": artifact.get("expired"),
+            "created_at": artifact.get("created_at"),
+            "expires_at": artifact.get("expires_at"),
+            "updated_at": artifact.get("updated_at"),
+            "digest": artifact.get("digest"),
+        })
+
+    return json.dumps({
+        "run_id": int(run_id),
+        "repository": repo_name,
+        "total_count": len(artifacts),
+        "artifacts": artifacts,
+    }, indent=2, ensure_ascii=False)
+
+
+def github_workflow_download_artifact(
+    run_id,
+    artifact_name="",
+    repo="",
+    destination=".",
+):
+    """Download a GitHub Actions artifact from a workflow run."""
+    import os
+    import subprocess
+
+    if not str(run_id).strip().isdigit():
+        return "ERROR: run_id must be numeric"
+
+    if not str(artifact_name).strip():
+        return "ERROR: artifact_name is required"
+
+    destination = os.path.abspath(os.path.expanduser(str(destination)))
+    os.makedirs(destination, exist_ok=True)
+
+    cmd = [
+        "gh", "run", "download", str(run_id),
+        "--name", str(artifact_name),
+        "--dir", destination,
+    ]
+
+    if repo:
+        cmd.extend(["--repo", repo])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        return "ERROR: artifact download timed out"
+
+    if result.returncode != 0:
+        return (
+            f"ERROR: artifact download failed\n"
+            f"exit_code={result.returncode}\n"
+            f"{result.stderr.strip()}"
+        )
+
+    return (
+        "ARTIFACT_DOWNLOAD: SUCCESS\n"
+        f"run_id={run_id}\n"
+        f"artifact={artifact_name}\n"
+        f"destination={destination}\n"
+        f"{result.stdout.strip()}"
+    )
+
 def github_workflow_result(run_id, repo="", include_logs="true"):
     """Return structured result and failed logs for a GitHub Actions run."""
     import json
@@ -655,6 +782,8 @@ TOOLS = {
     "github_workflow_status": github_workflow_status,
     "github_workflow_wait": github_workflow_wait,
     "github_workflow_result": github_workflow_result,
+    "github_workflow_artifacts": github_workflow_artifacts,
+    "github_workflow_download_artifact": github_workflow_download_artifact,
 }
 
 

@@ -132,3 +132,26 @@ jobs:
         run: |
           echo "ERROR: unsupported project type"
           exit 1
+
+
+      - name: Generate Agent Build/Test report
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "Agent Build/Test Report"
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Commit: $GITHUB_SHA"
+            echo "Branch: $GITHUB_REF_NAME"
+            echo "Run ID: $GITHUB_RUN_ID"
+            echo "Conclusion: ${{ job.status }}"
+            echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > agent-build-test-report.txt
+
+      - name: Upload Agent Build/Test artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-build-test-report
+          path: agent-build-test-report.txt
+          retention-days: 7
