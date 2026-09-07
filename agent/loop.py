@@ -16,40 +16,48 @@ TOOL_PATTERN = re.compile(
 
 def parse_args(text):
     args = {}
+    current_key = None
+    current_value = []
 
     for line in text.splitlines():
-        if "=" not in line:
-            continue
+        if "=" in line and not line.startswith(" "):
+            if current_key is not None:
+                args[current_key] = "\n".join(current_value)
 
-        key, value = line.split("=", 1)
-        args[key.strip()] = value
+            key, value = line.split("=", 1)
+            current_key = key.strip()
+            current_value = [value]
+        elif current_key is not None:
+            current_value.append(line)
+
+    if current_key is not None:
+        args[current_key] = "\n".join(current_value)
 
     return args
 
 
-PROMPT = """You are a coding agent.
+SYSTEM = """You are a coding agent.
 
-You have ONE tool.
+You can use these tools:
 
-Tool name:
-read_file
+list_files(path)
+read_file(path)
+search_files(pattern, path)
 
-Tool call format:
+When you need one of these tools, output a tool call.
+
+Example:
 
 <tool_call>
-TOOL: read_file
+TOOL: list_files
 ARGS:
-path=FILE
+path=.
 </tool_call>
 
-IMPORTANT:
-If the user asks you to read a file, you MUST output the tool call.
-Do not say you cannot access the file.
-Do not explain before calling the tool.
+After receiving a tool result, continue the task.
 
-After a tool result is provided, continue the task.
-
-USER REQUEST:
+Never say that you cannot access the tools.
+Never invent tool results.
 """
 
 
@@ -74,18 +82,17 @@ class Agent:
     def run(self, user_prompt):
 
         self.history = [
-            PROMPT + user_prompt
+            SYSTEM,
+            "USER REQUEST:\n" + user_prompt
         ]
 
-        for iteration in range(10):
+        for iteration in range(20):
 
             print()
             print(f"[agent iteration {iteration + 1}]")
             print()
 
-            prompt = "\n\n".join(self.history)
-
-            response = self.ask(prompt)
+            response = self.ask("\n\n".join(self.history))
 
             match = TOOL_PATTERN.search(response)
 
@@ -98,18 +105,17 @@ class Agent:
             args = parse_args(match.group("args"))
 
             print()
-            print("========================================")
-            print("TOOL CALL")
-            print("========================================")
+            print("=" * 40)
             print("TOOL:", tool_name)
             print("ARGS:", args)
+            print("=" * 40)
 
             result = execute_tool(tool_name, args)
 
             print()
-            print("========================================")
+            print("=" * 40)
             print("TOOL RESULT")
-            print("========================================")
+            print("=" * 40)
             print(result[:12000])
 
             self.history.append(
@@ -124,8 +130,6 @@ TOOL: {tool_name}
 RESULT:
 {result}
 </tool_result>
-
-Continue the task.
 """
             )
 
