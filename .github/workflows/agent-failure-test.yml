@@ -1,0 +1,23 @@
+name: Agent Failure Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  intentional-failure:
+    name: Intentional Failure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Prepare
+        run: |
+          echo "Agent v0.8d failure-log extraction test"
+
+      - name: Intentional failure
+        run: |
+          echo "EXPECTED FAILURE: v0.8d test"
+          echo "This error must be readable by github_workflow_result"
+          exit 42

@@ -485,6 +485,76 @@ def github_workflow_status(run_id, repo=""):
     return run_command(command)
 
 
+
+def github_workflow_result(run_id, repo="", include_logs="true"):
+    """Return structured result and failed logs for a GitHub Actions run."""
+    import json
+    import subprocess
+
+    if not str(run_id).strip().isdigit():
+        return "ERROR: run_id must be numeric"
+
+    cmd = [
+        "gh", "run", "view", str(run_id),
+        "--json", "databaseId,name,status,conclusion,url,headBranch,headSha",
+    ]
+
+    if repo:
+        cmd.extend(["--repo", repo])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return "ERROR: GitHub CLI timed out"
+
+    if result.returncode != 0:
+        return (
+            f"ERROR: gh run view failed\n"
+            f"HTTP/exit: {result.returncode}\n"
+            f"{result.stderr.strip()}"
+        )
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return f"ERROR: invalid JSON from gh run view\n{result.stdout}"
+
+    conclusion = data.get("conclusion")
+
+    if str(include_logs).lower() in ("true", "1", "yes") and conclusion not in (
+        None, "", "success"
+    ):
+        log_cmd = [
+            "gh", "run", "view", str(run_id),
+            "--log-failed",
+        ]
+
+        if repo:
+            log_cmd.extend(["--repo", repo])
+
+        try:
+            logs = subprocess.run(
+                log_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            data["failed_logs"] = "ERROR: failed-log retrieval timed out"
+        else:
+            data["failed_logs"] = (
+                logs.stdout
+                if logs.stdout.strip()
+                else logs.stderr.strip()
+            )
+
+    return json.dumps(data, indent=2, ensure_ascii=False)
+
 def github_workflow_wait(run_id, repo="", timeout="300", interval="5"):
     try:
         timeout_seconds = int(timeout)
@@ -584,6 +654,7 @@ TOOLS = {
     "github_pr_create": github_pr_create,
     "github_workflow_status": github_workflow_status,
     "github_workflow_wait": github_workflow_wait,
+    "github_workflow_result": github_workflow_result,
 }
 
 
