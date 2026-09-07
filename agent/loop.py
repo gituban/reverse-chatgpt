@@ -45,6 +45,9 @@ read_file(path)
 search_files(pattern, path)
 write_file(path, content)
 run_command(command)
+git_status()
+git_diff()
+git_log()
 
 When a user asks you to inspect or modify files, use the appropriate tool.
 
@@ -73,6 +76,9 @@ read_file(path)
 search_files(pattern, path)
 write_file(path, content)
 run_command(command)
+git_status()
+git_diff()
+git_log()
 
 Output ONLY the tool call.
 Do not explain.

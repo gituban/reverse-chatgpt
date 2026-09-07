@@ -110,12 +110,27 @@ def run_command(command):
         return f"ERROR: {e}"
 
 
+def git_status():
+    return run_command("git status --short --branch")
+
+
+def git_diff():
+    return run_command("git diff")
+
+
+def git_log():
+    return run_command("git log --oneline -10")
+
+
 TOOLS = {
     "list_files": list_files,
     "read_file": read_file,
     "search_files": search_files,
     "write_file": write_file,
     "run_command": run_command,
+    "git_status": git_status,
+    "git_diff": git_diff,
+    "git_log": git_log,
 }
 
 
