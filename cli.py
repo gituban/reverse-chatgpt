@@ -5,20 +5,32 @@ def main():
     print("===================================")
     print(" Reverse ChatGPT Coding Agent MVP")
     print("===================================")
-    print("Type 'exit' or 'quit' to exit.")
+    print("Multiline mode: tekan Ctrl+D untuk mengirim prompt")
+    print("Ketik 'exit' atau 'quit' pada baris pertama untuk keluar.")
     print()
 
     agent = Agent()
 
     while True:
         try:
-            prompt = input("Agent> ")
+            first_line = input("Agent> ")
 
-            if prompt.lower().strip() in {"exit", "quit"}:
+            if first_line.lower().strip() in {"exit", "quit"}:
                 break
 
-            if not prompt.strip():
+            if not first_line.strip():
                 continue
+
+            lines = [first_line]
+
+            while True:
+                try:
+                    line = input("... ")
+                    lines.append(line)
+                except EOFError:
+                    break
+
+            prompt = "\n".join(lines)
 
             print()
             agent.run(prompt)

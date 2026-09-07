@@ -38,26 +38,54 @@ def parse_args(text):
 
 SYSTEM = """You are a coding agent.
 
-You can use these tools:
+You have real executable tools:
 
 list_files(path)
 read_file(path)
 search_files(pattern, path)
+write_file(path, content)
 
-When you need one of these tools, output a tool call.
+When a user asks you to inspect or modify files, use the appropriate tool.
 
-Example:
+Tool call format:
 
 <tool_call>
-TOOL: list_files
+TOOL: tool_name
 ARGS:
-path=.
+key=value
 </tool_call>
 
-After receiving a tool result, continue the task.
-
-Never say that you cannot access the tools.
+The tools are available.
+Never claim that the tools are unavailable.
 Never invent tool results.
+
+After receiving a tool result, continue the task.
+"""
+
+
+TOOL_PLANNER = """Convert the user's request into the NEXT required tool call.
+
+The following tools are available and executable:
+
+list_files(path)
+read_file(path)
+search_files(pattern, path)
+write_file(path, content)
+
+Output ONLY the tool call.
+Do not explain.
+Do not say the tools are unavailable.
+Do not invent a tool result.
+
+Format:
+
+<tool_call>
+TOOL: tool_name
+ARGS:
+key=value
+</tool_call>
+
+USER REQUEST:
 """
 
 
@@ -86,6 +114,8 @@ class Agent:
             "USER REQUEST:\n" + user_prompt
         ]
 
+        planner_used = False
+
         for iteration in range(20):
 
             print()
@@ -96,6 +126,36 @@ class Agent:
 
             match = TOOL_PATTERN.search(response)
 
+            # Only use the planner once, and only before any
+            # tool has been successfully executed.
+            if not match and not planner_used:
+
+                planner_used = True
+
+                planner_prompt = (
+                    TOOL_PLANNER
+                    + user_prompt
+                    + "\n\nPREVIOUS RESPONSE:\n"
+                    + response
+                )
+
+                print()
+                print("[agent] No tool call detected. Planning tool action...")
+                print()
+
+                planned = self.ask(planner_prompt)
+
+                match = TOOL_PATTERN.search(planned)
+
+                if match:
+                    response = planned
+                else:
+                    print()
+                    print("[agent] Final answer reached.")
+                    return response
+
+            # If a tool was already executed and the model now
+            # gives a normal response, that response is final.
             if not match:
                 print()
                 print("[agent] Final answer reached.")
