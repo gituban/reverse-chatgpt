@@ -280,6 +280,68 @@ def github_workflow_runs(repo="", limit="10"):
     return run_command(command)
 
 
+def github_pr_create(title, body="", base="", head="", repo=""):
+    title = title.strip()
+    body = body.strip()
+    base = base.strip()
+    head = head.strip()
+    repo = repo.strip()
+
+    if not title:
+        return "ERROR: PR title cannot be empty"
+
+    try:
+        if not head:
+            current = subprocess.run(
+                ["git", "branch", "--show-current"],
+                text=True,
+                capture_output=True,
+            )
+
+            if current.returncode != 0:
+                return (
+                    f"EXIT_CODE: {current.returncode}\n"
+                    f"{current.stderr.strip() or '(no output)'}"
+                )
+
+            head = current.stdout.strip()
+
+        if not head:
+            return "ERROR: unable to determine current branch"
+
+        command = ["gh", "pr", "create", "--title", title]
+
+        if body:
+            command.extend(["--body", body])
+
+        if base:
+            command.extend(["--base", base])
+
+        command.extend(["--head", head])
+
+        if repo:
+            command.extend(["--repo", repo])
+
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+        )
+
+        output = result.stdout
+
+        if result.stderr:
+            output += "\n" + result.stderr
+
+        return (
+            f"EXIT_CODE: {result.returncode}\n"
+            f"{output.strip() or '(no output)'}"
+        )
+
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 def github_workflow_run(workflow, repo="", ref=""):
     command = f"gh workflow run {workflow}"
 
@@ -395,6 +457,7 @@ TOOLS = {
     "github_workflows": github_workflows,
     "github_workflow_runs": github_workflow_runs,
     "github_workflow_run": github_workflow_run,
+    "github_pr_create": github_pr_create,
     "github_workflow_status": github_workflow_status,
     "github_workflow_wait": github_workflow_wait,
 }
