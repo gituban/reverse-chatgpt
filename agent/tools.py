@@ -144,6 +144,18 @@ def github_workflow_runs(repo="", limit="10"):
     return run_command(command)
 
 
+def github_workflow_run(workflow, repo="", ref=""):
+    command = f"gh workflow run {workflow}"
+
+    if repo:
+        command += f" --repo {repo}"
+
+    if ref:
+        command += f" --ref {ref}"
+
+    return run_command(command)
+
+
 TOOLS = {
     "list_files": list_files,
     "read_file": read_file,
@@ -156,6 +168,7 @@ TOOLS = {
     "github_repo_info": github_repo_info,
     "github_workflows": github_workflows,
     "github_workflow_runs": github_workflow_runs,
+    "github_workflow_run": github_workflow_run,
 }
 
 

@@ -51,6 +51,7 @@ git_log()
 github_repo_info(repo)
 github_workflows(repo)
 github_workflow_runs(repo, limit)
+github_workflow_run(workflow, repo, ref)
 
 When a user asks you to inspect or modify files, use the appropriate tool.
 
@@ -85,6 +86,7 @@ git_log()
 github_repo_info(repo)
 github_workflows(repo)
 github_workflow_runs(repo, limit)
+github_workflow_run(workflow, repo, ref)
 
 Output ONLY the tool call.
 Do not explain.
