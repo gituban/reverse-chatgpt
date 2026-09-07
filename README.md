@@ -1,5 +1,26 @@
 # reverse-chatgpt
 
+
+## Original Project / Attribution
+
+This repository is forked from:
+
+**s5treak/reverse-chatgpt**
+
+Original repository:
+
+https://github.com/s5treak/reverse-chatgpt
+
+The original `reverse-chatgpt` implementation and its underlying functionality
+are attributed to the original project and its author.
+
+This fork, maintained under `gituban/reverse-chatgpt`, adds an experimental
+CLI coding-agent layer on top of the original project.
+
+The coding-agent functionality described below is additional development in
+this fork and does not claim authorship of the original `reverse-chatgpt`
+implementation.
+
 A reverse-engineered, **no-API-key** ChatGPT client that streams responses in real time. It mimics a real browser session to bypass the authentication wall, solves proof-of-work and Turnstile challenges automatically, and exposes a clean HTTP streaming endpoint via FastAPI.
 
 ---
