@@ -406,7 +406,7 @@ def project_ci_workflow(
             "      - name: Setup Python",
             "        uses: actions/setup-python@v5",
             "        with:",
-            '          python-version: "3.x"',
+            '          python-version: "3.12"',
         ]
 
         root = Path(path)

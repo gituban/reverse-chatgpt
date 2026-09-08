@@ -109,6 +109,8 @@ When a repository needs GitHub Actions build/test configuration:
 8. Do not invent commands outside the project strategy unless repository
    metadata proves they are necessary.
 
+9. For Python CI, do not use a floating "3.x" runtime. Prefer an explicit project-declared Python version; when none is declared, use the generator compatibility baseline.
+
 PROJECT-AWARE EXECUTION PROTOCOL:
 
 Before selecting build or test commands for a repository:
