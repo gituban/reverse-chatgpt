@@ -290,6 +290,60 @@ def git_push(remote="", branch=""):
         return f"ERROR: {e}"
 
 
+
+def git_stage(path):
+    """
+    Stage one explicit path.
+
+    Deliberately accepts only one path per call so the agent does not
+    accidentally stage unrelated/untracked files with `git add .`.
+    """
+    import subprocess
+
+    path = str(path).strip()
+
+    if not path:
+        return "ERROR: path is required"
+
+    if path in {".", "./", "*", "-A", "--all"}:
+        return "ERROR: broad staging is not allowed; stage explicit files only"
+
+    result = subprocess.run(
+        ["git", "add", "--", path],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    if result.returncode != 0:
+        return (
+            "ERROR: git stage failed\n"
+            + result.stderr.strip()
+        )
+
+    return f"GIT_STAGE: SUCCESS\nPATH: {path}"
+
+
+def git_head_sha():
+    """Return the exact current Git HEAD SHA."""
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    if result.returncode != 0:
+        return (
+            "ERROR: unable to determine Git HEAD\n"
+            + result.stderr.strip()
+        )
+
+    return result.stdout.strip()
+
+
 def git_commit(message):
     message = message.strip()
 
@@ -522,6 +576,28 @@ def github_repair_context(
     run = data["run"]
     run_id = run["databaseId"]
 
+    # Never diagnose a queued/in-progress run as a failure.
+    # Wait for the exact run to finish first.
+    if run.get("status") != "completed":
+        wait_result = github_workflow_wait(
+            str(run_id),
+            repo=data["repo"],
+            timeout="300",
+            interval="5",
+        )
+
+        if isinstance(wait_result, str) and wait_result.startswith("ERROR:"):
+            return json.dumps({
+                "repair_context": True,
+                "repository": data["repo"],
+                "workflow": data["workflow"],
+                "commit_sha": commit_sha,
+                "run_id": run_id,
+                "status": "WAIT_ERROR",
+                "error": wait_result,
+                "next_action": "STOP",
+            }, indent=2, ensure_ascii=False)
+
     result = github_workflow_result(
         str(run_id),
         repo=data["repo"],
@@ -535,7 +611,15 @@ def github_repair_context(
             "failed_logs": result,
         }
 
-    conclusion = run.get("conclusion")
+    conclusion = result_data.get(
+        "conclusion",
+        run.get("conclusion"),
+    )
+
+    run_status = result_data.get(
+        "status",
+        run.get("status"),
+    )
 
     context = {
         "repair_context": True,
@@ -545,7 +629,7 @@ def github_repair_context(
         "run_id": run_id,
         "run_url": run.get("url", ""),
         "head_branch": run.get("headBranch", ""),
-        "status": run.get("status"),
+        "status": run_status,
         "conclusion": conclusion,
         "failed_logs": result_data.get("failed_logs", ""),
     }
@@ -1154,6 +1238,8 @@ TOOLS = {
     "github_workflow_run_for_commit": github_workflow_run_for_commit,
     "github_repair_context": github_repair_context,
     "github_workflow_download_artifact": github_workflow_download_artifact,
+    "git_stage": git_stage,
+    "git_head_sha": git_head_sha,
 }
 
 
