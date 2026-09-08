@@ -182,6 +182,27 @@ After pushing a project-changing commit:
 6. Never use an artifact from a different workflow run or commit.
 7. Android/Gradle build and test execution belongs on GitHub Actions;
    use only lightweight/static validation locally.
+
+
+AUTONOMOUS_TOOL_AVAILABILITY_RULE:
+
+The repository, Git, GitHub Actions, project, and artifact tools listed in
+this SYSTEM prompt are real executable tools in this runtime.
+
+Never claim that a listed tool is unavailable merely because the previous
+model response did not emit a tool call.
+
+If an operation can be performed by a listed tool, emit that tool call.
+Only report a tool as unavailable when execute_tool returns an actual
+unsupported-tool or execution error.
+
+For autonomous tasks, a prose progress report is not completion.
+Continue tool execution until the requested repository, CI, and required
+artifact state is actually verified.
+
+For artifact-producing autonomous projects, completion requires
+github_project_cycle_context for the exact final commit with
+next_action=DONE.
 """
 
 
@@ -270,7 +291,19 @@ class Agent:
             or "repair protocol" in repair_request
         )
 
-        for iteration in range(20):
+        autonomous_active = (
+            "autonomous" in repair_request
+            or "carry the entire task" in repair_request
+            or "carry the task through" in repair_request
+            or "do not ask me to perform intermediate" in repair_request
+            or "without asking me to perform intermediate" in repair_request
+        )
+
+        autonomous_done = False
+
+        max_iterations = 40 if autonomous_active else 20
+
+        for iteration in range(max_iterations):
 
             print()
             print(f"[agent iteration {iteration + 1}]")
@@ -282,11 +315,15 @@ class Agent:
 
             # Only use the planner once, and only before any
             # tool has been successfully executed.
-            if not match and (repair_active or not planner_used):
+            if not match and (
+                repair_active
+                or autonomous_active
+                or not planner_used
+            ):
 
                 # For ordinary requests planner fallback is one-shot.
                 # During autonomous repair it remains available until DONE.
-                if not repair_active:
+                if not repair_active and not autonomous_active:
                     planner_used = True
 
                 planner_prompt = (
@@ -413,6 +450,46 @@ tools in this Agent environment and have already been used successfully.
 
                     continue
 
+                # AUTONOMOUS_FINAL_GUARD
+                if autonomous_active and not autonomous_done:
+                    print()
+                    print(
+                        "[agent] Autonomous task is still active; "
+                        "continuing tool execution..."
+                    )
+                    print()
+
+                    self.history.append(
+                        "ASSISTANT:\n" + response
+                    )
+
+                    self.history.append(
+                        """AUTONOMOUS CONTROL:
+
+This autonomous task is not complete.
+
+The repository, Git, GitHub Actions, project, and artifact tools listed
+in SYSTEM are executable in this Agent environment.
+
+Do not claim that these tools are unavailable merely because the previous
+response did not emit a tool call.
+
+Continue with the next required tool action.
+
+For artifact-producing projects, completion requires:
+1. obtain the exact final commit SHA;
+2. verify CI for that exact SHA;
+3. call github_project_cycle_context() for that exact SHA;
+4. require next_action=DONE;
+5. verify actual_artifacts is non-empty;
+6. verify required artifacts are non-expired and non-zero size.
+
+A prose progress report is NOT completion.
+"""
+                    )
+
+                    continue
+
                 print()
                 print("[agent] Final answer reached.")
                 return response
@@ -427,6 +504,19 @@ tools in this Agent environment and have already been used successfully.
             print("=" * 40)
 
             result = execute_tool(tool_name, args)
+
+            # AUTONOMOUS_DONE_TRACKER
+            if tool_name == "github_project_cycle_context":
+                try:
+                    autonomous_context = json.loads(result)
+                except (json.JSONDecodeError, TypeError):
+                    autonomous_context = None
+
+                if (
+                    isinstance(autonomous_context, dict)
+                    and autonomous_context.get("next_action") == "DONE"
+                ):
+                    autonomous_done = True
 
             # ------------------------------------------------
             # Autonomous repair safety controller
