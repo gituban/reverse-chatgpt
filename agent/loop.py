@@ -206,36 +206,60 @@ next_action=DONE.
 """
 
 
-TOOL_PLANNER = """Convert the user's request into the NEXT required tool call.
+TOOL_PLANNER = """
+Convert the user's request and the CURRENT EXECUTION STATE into the
+NEXT required executable tool call.
 
 The following tools are available and executable:
 
+FILES:
 list_files(path)
 read_file(path)
 search_files(pattern, path)
 write_file(path, content)
+
+COMMANDS / VALIDATION:
 run_command(command)
 run_test(command, timeout)
+
+PROJECT:
 detect_project(path)
-detect_project(path)
+project_strategy(path)
+project_ci_workflow(path)
+write_project_ci_workflow(path, destination)
+
+GIT:
 git_status()
 git_diff()
 git_log()
 git_create_branch(branch)
+git_stage(path)
 git_commit(message)
+git_head_sha()
 git_push(remote, branch)
+
+GITHUB:
 github_repo_info(repo)
 github_workflows(repo)
 github_workflow_runs(repo, limit)
 github_workflow_run(workflow, repo, ref)
-github_pr_create(title, body, base, head, repo)
 github_workflow_status(run_id, repo)
 github_workflow_wait(run_id, repo, timeout, interval)
+github_workflow_result(run_id, repo, include_logs)
+github_workflow_run_for_commit(commit_sha, repo, workflow, branch, timeout, interval)
+github_workflow_artifacts(run_id, repo, name)
+github_workflow_download_artifact(run_id, artifact_name, repo, destination)
+github_repair_context(commit_sha, repo, workflow, branch)
+github_repair_loop(repo, branch, workflow, max_iterations, wait_timeout)
+github_project_cycle_context(commit_sha, path, repo, workflow, branch, timeout, interval)
+github_pr_create(title, body, base, head, repo)
 
-Output ONLY the tool call.
+Output ONLY one executable tool call.
+
 Do not explain.
+Do not output prose.
 Do not say the tools are unavailable.
-Do not invent a tool result.
+Do not invent tool results.
 
 Format:
 
@@ -245,32 +269,34 @@ ARGS:
 key=value
 </tool_call>
 
-USER REQUEST:
+PLANNER RULES:
 
-PLANNER_EXECUTION_REQUIREMENT_V11B:
+1. Use CURRENT EXECUTION STATE as authoritative information about what has
+   already happened.
 
-You are selecting the NEXT executable action for the coding Agent.
+2. Never repeat a tool call that already failed for the same reason unless
+   something relevant has changed.
 
-You MUST output exactly one executable <tool_call> when the task is still
-incomplete.
+3. If a target path does not exist and the user asked to CREATE that target,
+   creation is the next goal. Do not keep calling detect_project on the
+   missing target.
 
-Do not answer with prose.
-Do not say that tools are unavailable.
-Do not merely describe the next step.
+4. Inspect the nearest existing parent when useful, then create the required
+   files/directories.
 
-The tools listed in SYSTEM are executable.
+5. A missing target requested by the user is not a CI repair failure.
 
-If a requested target path does not exist:
-- do not repeatedly detect the same missing path;
-- inspect the nearest existing parent/repository;
-- if the user's goal requires creating the target, proceed using the file
-  creation tools instead of treating the missing directory as fatal.
+6. CI repair begins only after an actual workflow result reports failure.
 
-A missing project that the user explicitly asked to create is a creation
-task, not a repair failure.
+7. After source changes:
+   inspect diff -> stage intended files -> commit -> push -> exact SHA.
 
-CI repair begins only after an actual CI result indicates failure.
+8. After push, use the exact commit SHA for workflow verification.
 
+9. For artifact-producing projects, CI success alone is not completion.
+   Verify the required artifact and use github_project_cycle_context.
+
+10. If the task remains incomplete, you MUST choose one executable next tool.
 """
 
 
@@ -300,6 +326,14 @@ class Agent:
         ]
 
         planner_used = False
+
+        # STATE_AWARE_PLANNER_V11C
+        # Preserve the most recent real tool execution so planner fallback
+        # never loses critical runtime state such as "path does not exist",
+        # CI failure, commit SHA, or artifact information.
+        last_tool_name = None
+        last_tool_args = None
+        last_tool_result = None
 
         # Separate from the generic 20-step tool loop.
         # A repair attempt means one distinct failed commit SHA.
@@ -354,11 +388,26 @@ class Agent:
                 if not repair_active and not autonomous_active:
                     planner_used = True
 
+                recent_history = "\n\n".join(
+                    str(item) for item in self.history[-10:]
+                )
+
                 planner_prompt = (
                     TOOL_PLANNER
+                    + "\n\nUSER REQUEST:\n"
                     + user_prompt
-                    + "\n\nPREVIOUS RESPONSE:\n"
+                    + "\n\nCURRENT EXECUTION STATE:\n"
+                    + "LAST TOOL: "
+                    + str(last_tool_name)
+                    + "\nLAST TOOL ARGS: "
+                    + str(last_tool_args)
+                    + "\nLAST TOOL RESULT:\n"
+                    + str(last_tool_result)
+                    + "\n\nRECENT AGENT HISTORY:\n"
+                    + recent_history
+                    + "\n\nPREVIOUS MODEL RESPONSE:\n"
                     + response
+                    + "\n\nSelect exactly ONE next executable tool call."
                 )
 
                 print()
@@ -387,6 +436,14 @@ class Agent:
                                 "autonomous task is active; retrying..."
                             )
                         print()
+
+                        # PLANNER_RETRY_CONTEXT_V11C
+                        self.history.append(
+                            "PLANNER CONTROL: The previous planner response "
+                            "contained no executable tool call. The task is "
+                            "still incomplete. Use the latest real TOOL RESULT "
+                            "and choose a different executable next action."
+                        )
 
                         self.history.append(
                             "ASSISTANT:\n" + planned
@@ -538,6 +595,11 @@ A prose progress report is NOT completion.
             print("=" * 40)
 
             result = execute_tool(tool_name, args)
+
+            # STATE_AWARE_PLANNER_V11C: persist real runtime state.
+            last_tool_name = tool_name
+            last_tool_args = args
+            last_tool_result = result
 
             # AUTONOMOUS_DONE_TRACKER
             if tool_name == "github_project_cycle_context":
