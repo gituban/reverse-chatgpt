@@ -283,6 +283,9 @@ The next required action should be a tool call.
 If you have only obtained the HEAD SHA, call
 github_repair_context() for that exact SHA.
 
+Before validation, call detect_project(path=.) and
+project_strategy(path=.) and follow that strategy.
+
 If a local repair already passes, continue with:
 git_diff -> git_stage -> git_commit -> git_push ->
 git_head_sha -> github_repair_context.
@@ -403,10 +406,17 @@ Failed commit SHA: {failed_sha}
 
 Analyze the failed_logs above and perform ONE repair attempt.
 
+Before choosing any validation/build command:
+- call detect_project(path=.);
+- call project_strategy(path=.);
+- follow the returned strategy;
+- do not invent ecosystem-specific commands.
+
 Requirements:
 - make the smallest relevant source change;
 - do not touch unrelated untracked files;
-- run lightweight validation;
+- use the strategy's local_validation when appropriate;
+- for Gradle/Android, rely on GitHub Actions instead of local Gradle builds;
 - inspect the diff;
 - stage only intentional files with git_stage(path);
 - commit the repair;

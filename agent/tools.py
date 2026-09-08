@@ -153,6 +153,7 @@ def project_strategy(path="."):
     CI build/test commands, artifact expectations, and repair guidance.
     """
     import json
+    from pathlib import Path
 
     detected_raw = detect_project(path)
 
@@ -182,15 +183,54 @@ def project_strategy(path="."):
     }
 
     if build_system == "gradle":
-        strategy["local_validation"] = [
-            "./gradlew tasks --quiet",
+        root = Path(path)
+
+        android_markers = [
+            root / "AndroidManifest.xml",
+            root / "app" / "src" / "main" / "AndroidManifest.xml",
         ]
+
+        android_plugin_markers = (
+            "com.android.application",
+            "com.android.library",
+        )
+
+        gradle_text = ""
+
+        for candidate in [
+            root / "build.gradle",
+            root / "build.gradle.kts",
+            root / "app" / "build.gradle",
+            root / "app" / "build.gradle.kts",
+        ]:
+            if candidate.exists():
+                try:
+                    gradle_text += "\n" + candidate.read_text(
+                        errors="ignore"
+                    )
+                except OSError:
+                    pass
+
+        is_android = (
+            any(x.exists() for x in android_markers)
+            or any(x in gradle_text for x in android_plugin_markers)
+        )
+
+        strategy["framework"] = (
+            "android" if is_android else "gradle"
+        )
+
+        # Per project policy, Gradle/Android builds belong on
+        # GitHub Actions rather than this orchestration machine.
+        strategy["local_validation"] = []
 
         strategy["ci_commands"] = [
             "./gradlew test",
         ]
 
-        if project_type == "java_or_android":
+        if is_android:
+            strategy["project_type"] = "android"
+
             strategy["ci_commands"].append(
                 "./gradlew assembleDebug"
             )
@@ -200,9 +240,17 @@ def project_strategy(path="."):
             ]
 
             strategy["repair_notes"] = [
-                "Prefer GitHub Actions for Gradle/Android build execution.",
-                "Inspect Gradle task failure before changing source code.",
-                "Do not assume assembleDebug exists for non-Android Gradle projects.",
+                "This is an Android Gradle project.",
+                "Run Gradle build/test on GitHub Actions.",
+                "Use assembleDebug for APK validation.",
+                "Inspect Gradle failure logs before modifying source.",
+            ]
+
+        else:
+            strategy["repair_notes"] = [
+                "This is a non-Android Gradle project.",
+                "Run Gradle tests on GitHub Actions.",
+                "Do not invoke assembleDebug.",
             ]
 
     elif build_system == "maven":
