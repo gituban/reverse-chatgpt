@@ -172,9 +172,15 @@ After pushing a project-changing commit:
    - VERIFY_ARTIFACT: inspect expected versus actual artifacts before
      declaring success.
    - DONE: CI and required artifacts are verified for that exact commit.
-4. Never declare a build successful from an older commit.
-5. Never use an artifact from a different workflow run or commit.
-6. Android/Gradle build and test execution belongs on GitHub Actions;
+4. If project_strategy reports one or more expected artifacts, CI success
+   alone is NOT sufficient for success. Before any final answer, call
+   github_project_cycle_context for the exact commit and require:
+   - next_action == DONE
+   - actual_artifacts is non-empty
+   - at least one required artifact is not expired and has non-zero size.
+5. Never declare a build successful from an older commit.
+6. Never use an artifact from a different workflow run or commit.
+7. Android/Gradle build and test execution belongs on GitHub Actions;
    use only lightweight/static validation locally.
 """
 
@@ -347,6 +353,30 @@ next_action=DONE.
             # A normal response is only final when no repair is active.
             # During autonomous repair the Agent must continue until the
             # exact new commit receives github_repair_context -> DONE.
+            # ARTIFACT_FINAL_GUARD
+            # If the task is an autonomous project cycle and the project
+            # expects artifacts, a prose answer after CI success is not
+            # sufficient. Force the model back through the unified
+            # controller before allowing final completion.
+            if not match and repair_active:
+                last_context = ""
+                for item in reversed(self.history):
+                    if isinstance(item, str) and '"expected_artifacts"' in item:
+                        last_context = item
+                        break
+
+                if (
+                    last_context
+                    and '"expected_artifacts": [' in last_context
+                    and '"next_action": "DONE"' not in last_context
+                ):
+                    self.history.append(
+                        "SYSTEM CONTROL: Required artifact verification is "
+                        "not complete. Use github_project_cycle_context for "
+                        "the exact current commit before answering."
+                    )
+                    continue
+
             if not match:
                 if repair_active:
                     print()
