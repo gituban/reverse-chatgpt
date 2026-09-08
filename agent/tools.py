@@ -1843,7 +1843,148 @@ def github_workflow_wait(run_id, repo="", timeout="300", interval="5"):
         time.sleep(interval_seconds)
 
 
+
+def github_project_cycle_context(
+    commit_sha,
+    path=".",
+    repo="",
+    workflow="",
+    branch="",
+    timeout="180",
+    interval="5",
+):
+    """Return one unified autonomous project/CI decision context.
+
+    Combines:
+    - project strategy
+    - exact commit-scoped workflow lookup
+    - CI conclusion
+    - failure logs
+    - expected project artifacts
+    - actual GitHub Actions artifacts
+
+    next_action is one of:
+    WAIT
+    ANALYZE_AND_REPAIR
+    VERIFY_ARTIFACT
+    DONE
+    """
+
+    import json
+
+    sha = str(commit_sha or "").strip()
+
+    if not sha:
+        return "ERROR: commit_sha is required"
+
+    try:
+        strategy = json.loads(project_strategy(path))
+    except Exception as exc:
+        return (
+            "ERROR: unable to determine project strategy: "
+            + str(exc)
+        )
+
+    expected_artifacts = strategy.get("artifacts", []) or []
+
+    run_raw = github_workflow_run_for_commit(
+        commit_sha=sha,
+        repo=repo,
+        workflow=workflow,
+        branch=branch,
+        timeout=timeout,
+        interval=interval,
+    )
+
+    if str(run_raw).startswith("ERROR:"):
+        return run_raw
+
+    try:
+        run = json.loads(run_raw)
+    except Exception as exc:
+        return (
+            "ERROR: invalid workflow-run context: "
+            + str(exc)
+        )
+
+    run_id = run.get("run_id")
+    status = run.get("status")
+    conclusion = run.get("conclusion")
+
+    context = {
+        "commit_sha": sha,
+        "path": path,
+        "repository": repo,
+        "workflow_filter": workflow,
+        "branch": branch,
+        "strategy": strategy,
+        "run": run,
+        "expected_artifacts": expected_artifacts,
+        "actual_artifacts": [],
+        "failed_logs": "",
+        "next_action": None,
+    }
+
+    if not run_id or status in {
+        "not_found",
+        "queued",
+        "in_progress",
+        "waiting",
+        "requested",
+        "pending",
+    }:
+        context["next_action"] = "WAIT"
+        return json.dumps(context, indent=2)
+
+    if status != "completed":
+        context["next_action"] = "WAIT"
+        return json.dumps(context, indent=2)
+
+    if conclusion != "success":
+        result_raw = github_workflow_result(
+            run_id=str(run_id),
+            repo=repo,
+            include_logs="true",
+        )
+
+        context["failed_logs"] = result_raw
+        context["next_action"] = "ANALYZE_AND_REPAIR"
+
+        return json.dumps(context, indent=2)
+
+    # Successful CI.
+    if expected_artifacts:
+        artifact_raw = github_workflow_artifacts(
+            run_id=str(run_id),
+            repo=repo,
+        )
+
+        try:
+            artifact_data = json.loads(artifact_raw)
+            actual = artifact_data.get("artifacts", []) or []
+        except Exception:
+            actual = []
+
+        context["actual_artifacts"] = actual
+
+        live = [
+            item
+            for item in actual
+            if not item.get("expired")
+            and int(item.get("size_in_bytes", 0) or 0) > 0
+        ]
+
+        if not live:
+            context["next_action"] = "VERIFY_ARTIFACT"
+            return json.dumps(context, indent=2)
+
+    context["next_action"] = "DONE"
+
+    return json.dumps(context, indent=2)
+
+
 TOOLS = {
+    "github_project_cycle_context": github_project_cycle_context,
     "list_files": list_files,
     "read_file": read_file,
     "search_files": search_files,

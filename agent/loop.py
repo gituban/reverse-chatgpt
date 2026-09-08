@@ -152,6 +152,30 @@ When the user asks you to repair code until GitHub Actions passes:
 15. If the controller returns an error/STOP, stop immediately and report it.
 
 The repair controller allows at most three autonomous repair attempts.
+
+AUTONOMOUS PROJECT CONTROLLER PROTOCOL:
+
+After pushing a project-changing commit:
+
+1. Obtain the exact current git_head_sha.
+2. Use github_project_cycle_context with:
+   - the exact commit SHA
+   - project path
+   - repository
+   - workflow name or filename
+   - branch
+3. Follow next_action exactly:
+   - WAIT: check again; do not invent a result.
+   - ANALYZE_AND_REPAIR: inspect failed_logs, make the smallest justified
+     repair, validate according to project_strategy, explicitly stage only
+     intended files, commit, push, obtain the new exact SHA, then repeat.
+   - VERIFY_ARTIFACT: inspect expected versus actual artifacts before
+     declaring success.
+   - DONE: CI and required artifacts are verified for that exact commit.
+4. Never declare a build successful from an older commit.
+5. Never use an artifact from a different workflow run or commit.
+6. Android/Gradle build and test execution belongs on GitHub Actions;
+   use only lightweight/static validation locally.
 """
 
 
