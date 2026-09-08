@@ -282,18 +282,108 @@ def project_strategy(path="."):
         ]
 
     elif build_system in {"python", "pip", "pytest"} or project_type == "python":
+        root = Path(path)
+
+        pytest_detected = False
+
+        # Explicit pytest configuration is strong evidence.
+        for candidate in [
+            root / "pytest.ini",
+            root / "conftest.py",
+        ]:
+            if candidate.exists():
+                pytest_detected = True
+
+        # pyproject.toml may contain pytest configuration/dependency.
+        pyproject = root / "pyproject.toml"
+        if pyproject.exists():
+            try:
+                text = pyproject.read_text(errors="ignore").lower()
+                if "pytest" in text:
+                    pytest_detected = True
+            except OSError:
+                pass
+
+        # Detect conventional pytest test filenames.
+        #
+        # Inside a Git repository, only tracked files may influence
+        # project strategy. This prevents unrelated local experiments
+        # or generated/untracked files from changing CI behavior.
+        #
+        # Outside Git (for example temporary fixture directories used
+        # by tests), fall back to filesystem discovery.
+        import subprocess
+
+        git_root_result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "rev-parse",
+                "--show-toplevel",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        if git_root_result.returncode == 0:
+            tracked_result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "ls-files",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            if tracked_result.returncode == 0:
+                tracked_files = tracked_result.stdout.splitlines()
+
+                if any(
+                    Path(name).name.startswith("test_")
+                    and Path(name).suffix == ".py"
+                    for name in tracked_files
+                ):
+                    pytest_detected = True
+        else:
+            try:
+                if any(root.rglob("test_*.py")):
+                    pytest_detected = True
+            except OSError:
+                pass
+
+        strategy["framework"] = (
+            "pytest" if pytest_detected else "python"
+        )
+
         strategy["local_validation"] = [
-            "python -m py_compile agent/loop.py agent/tools.py cli.py",
+            "python -m compileall -q .",
         ]
 
-        strategy["ci_commands"] = [
-            "pytest",
-        ]
+        if pytest_detected:
+            strategy["ci_commands"] = [
+                "python -m pytest",
+            ]
 
-        strategy["repair_notes"] = [
-            "Prefer targeted py_compile or targeted test execution before full pytest.",
-            "If pytest is unavailable, inspect project metadata before installing dependencies.",
-        ]
+            strategy["repair_notes"] = [
+                "Pytest usage was detected from repository metadata or test files.",
+                "Use python -m pytest rather than assuming a pytest executable is on PATH.",
+                "Install pytest in CI when the project dependencies do not already provide it.",
+            ]
+        else:
+            strategy["ci_commands"] = [
+                "python -m compileall -q .",
+            ]
+
+            strategy["repair_notes"] = [
+                "No reliable pytest usage was detected.",
+                "Do not invent a pytest test suite.",
+                "Use Python bytecode compilation as the default CI validation.",
+            ]
 
     elif build_system == "cargo":
         strategy["local_validation"] = [
@@ -420,11 +510,25 @@ def project_ci_workflow(
                 "          pip install -r requirements.txt",
             ]
 
-        lines += [
-            "",
-            "      - name: Run tests",
-            "        run: pytest",
-        ]
+        framework = strategy.get("framework", "python")
+
+        if framework == "pytest":
+            # Ensure pytest exists even when requirements.txt does not
+            # explicitly provide it.
+            lines += [
+                "",
+                "      - name: Ensure pytest",
+                "        run: python -m pip install pytest",
+                "",
+                "      - name: Run tests",
+                "        run: python -m pytest",
+            ]
+        else:
+            lines += [
+                "",
+                "      - name: Validate Python sources",
+                "        run: python -m compileall -q .",
+            ]
 
     # --------------------------------------------------------
     # Node
