@@ -404,6 +404,12 @@ Requirements:
                     elif next_action == "DONE":
                         repair_active = False
 
+                        # Prevent the ordinary one-shot planner fallback
+                        # from running after repair has already reached
+                        # exact-SHA CI success. The next normal model
+                        # response must be treated as the final answer.
+                        planner_used = True
+
                         repair_instruction = """
 REPAIR CONTROL:
 
