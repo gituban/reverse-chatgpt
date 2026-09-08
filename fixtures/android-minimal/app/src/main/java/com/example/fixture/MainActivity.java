@@ -10,7 +10,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
 
         TextView view = new TextView(this);
-        view.setText("Android fixture");
+        view.setText("Autonomous Agent v1.0");
         setContentView(view);
     }
 }
