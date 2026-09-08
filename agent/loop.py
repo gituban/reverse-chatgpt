@@ -246,6 +246,31 @@ key=value
 </tool_call>
 
 USER REQUEST:
+
+PLANNER_EXECUTION_REQUIREMENT_V11B:
+
+You are selecting the NEXT executable action for the coding Agent.
+
+You MUST output exactly one executable <tool_call> when the task is still
+incomplete.
+
+Do not answer with prose.
+Do not say that tools are unavailable.
+Do not merely describe the next step.
+
+The tools listed in SYSTEM are executable.
+
+If a requested target path does not exist:
+- do not repeatedly detect the same missing path;
+- inspect the nearest existing parent/repository;
+- if the user's goal requires creating the target, proceed using the file
+  creation tools instead of treating the missing directory as fatal.
+
+A missing project that the user explicitly asked to create is a creation
+task, not a repair failure.
+
+CI repair begins only after an actual CI result indicates failure.
+
 """
 
 
@@ -286,10 +311,13 @@ class Agent:
         # Otherwise the model can emit a normal refusal after git_head_sha()
         # and terminate before github_repair_context() is ever reached.
         repair_request = user_prompt.lower()
-        repair_active = (
-            "autonomous repair" in repair_request
-            or "repair protocol" in repair_request
-        )
+        # Repair mode is runtime state, not prompt-intent state.
+        #
+        # Merely mentioning "autonomous repair" in a task must not put the
+        # Agent into repair mode before CI has actually failed.
+        #
+        # github_repair_context -> ANALYZE_AND_REPAIR activates this later.
+        repair_active = False
 
         autonomous_active = (
             "autonomous" in repair_request
@@ -346,12 +374,18 @@ class Agent:
                 else:
                     # During autonomous repair, a planner response without
                     # a tool call is not allowed to terminate the workflow.
-                    if repair_active:
+                    if repair_active or autonomous_active:
                         print()
-                        print(
-                            "[agent] Planner produced no tool call while "
-                            "repair is active; retrying..."
-                        )
+                        if repair_active:
+                            print(
+                                "[agent] Planner produced no tool call while "
+                                "repair is active; retrying..."
+                            )
+                        else:
+                            print(
+                                "[agent] Planner produced no tool call while "
+                                "autonomous task is active; retrying..."
+                            )
                         print()
 
                         self.history.append(
