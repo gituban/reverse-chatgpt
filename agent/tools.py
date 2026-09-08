@@ -1180,102 +1180,207 @@ def github_workflow_run_for_commit(
     timeout="180",
     interval="5",
 ):
-    """
-    Find the GitHub Actions run for an exact commit SHA.
+    """Find and optionally wait for an exact-SHA GitHub Actions run.
 
-    The commit SHA is the primary identity. A newer run from another
-    commit must never be returned.
+    Important:
+    A workflow file may exist only on a feature branch and therefore
+    cannot always be resolved through `gh run list --workflow FILE`,
+    because GitHub CLI may resolve workflow metadata from the default
+    branch.
+
+    This function therefore searches runs by exact commit SHA first,
+    then filters the returned run metadata locally.
     """
+
     import json
+    import re
     import subprocess
     import time
+    from pathlib import Path
 
-    if not commit_sha or len(commit_sha) < 7:
-        return "ERROR: valid commit SHA is required"
+    sha = str(commit_sha).strip()
+    workflow_filter = str(workflow or "").strip()
+    branch_filter = str(branch or "").strip()
 
-    try:
-        timeout_i = int(timeout)
-        interval_i = int(interval)
-    except ValueError:
-        return "ERROR: timeout and interval must be numeric"
+    if not sha:
+        return "ERROR: commit_sha is required"
 
-    if timeout_i < 10 or timeout_i > 1800:
-        return "ERROR: timeout must be between 10 and 1800 seconds"
+    cmd = [
+        "gh",
+        "run",
+        "list",
+        "--commit",
+        sha,
+        "--limit",
+        "100",
+        "--json",
+        (
+            "databaseId,status,conclusion,headSha,"
+            "headBranch,name,workflowName,url"
+        ),
+    ]
 
-    if interval_i < 1 or interval_i > 60:
-        return "ERROR: interval must be between 1 and 60 seconds"
+    if repo:
+        cmd += ["--repo", repo]
 
-    if not repo:
-        r = subprocess.run(
-            ["gh", "repo", "view", "--json", "nameWithOwner"],
-            capture_output=True,
-            text=True,
-            timeout=60,
+    if branch_filter:
+        cmd += ["--branch", branch_filter]
+
+    deadline = time.time() + int(timeout)
+    sleep_interval = max(1, int(interval))
+
+    def workflow_matches(run):
+        if not workflow_filter:
+            return True
+
+        wanted = workflow_filter.lower()
+
+        candidates = {
+            str(run.get("name") or "").lower(),
+            str(run.get("workflowName") or "").lower(),
+        }
+
+        # Filename-friendly matching:
+        # android-fixture-ci.yml
+        # Android Fixture CI
+        stem = Path(workflow_filter).stem.lower()
+
+        normalized_stem = (
+            stem.replace("-", " ")
+            .replace("_", " ")
+            .strip()
         )
-        if r.returncode != 0:
-            return "ERROR: unable to determine repository"
 
-        try:
-            repo = json.loads(r.stdout)["nameWithOwner"]
-        except Exception as exc:
-            return f"ERROR: invalid repository metadata: {exc}"
+        for value in list(candidates):
+            candidates.add(
+                value.replace("-", " ")
+                .replace("_", " ")
+                .strip()
+            )
 
-    deadline = time.time() + timeout_i
+        if wanted in candidates:
+            return True
 
-    while time.time() < deadline:
-        cmd = [
-            "gh", "run", "list",
-            "--repo", repo,
-            "--workflow", workflow,
-            "--commit", commit_sha,
-            "--limit", "20",
-            "--json",
-            "databaseId,status,conclusion,url,name,headBranch,headSha",
-        ]
+        if stem in candidates:
+            return True
 
-        if branch:
-            cmd.extend(["--branch", branch])
+        if normalized_stem in candidates:
+            return True
 
-        r = subprocess.run(
+        # Allow a workflow filename/path to match its display-name
+        # tokens, e.g. android-fixture-ci.yml -> Android Fixture CI.
+        wanted_tokens = {
+            token
+            for token in re.split(
+                r"[^a-z0-9]+",
+                stem,
+            )
+            if token
+        }
+
+        if wanted_tokens:
+            for value in candidates:
+                value_tokens = {
+                    token
+                    for token in re.split(
+                        r"[^a-z0-9]+",
+                        value,
+                    )
+                    if token
+                }
+
+                if wanted_tokens == value_tokens:
+                    return True
+
+        return False
+
+    last_runs = []
+
+    while True:
+        result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=60,
         )
 
-        if r.returncode != 0:
+        if result.returncode != 0:
             return (
-                "ERROR: unable to query workflow runs\n"
-                + r.stderr.strip()
+                "ERROR: gh run list failed\n"
+                + result.stderr.strip()
             )
 
         try:
-            runs = json.loads(r.stdout)
-        except json.JSONDecodeError:
-            return "ERROR: invalid workflow-run JSON"
+            runs = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            return (
+                "ERROR: invalid gh run list JSON: "
+                + str(exc)
+            )
+
+        last_runs = runs
 
         exact = [
-            run for run in runs
-            if run.get("headSha") == commit_sha
+            run
+            for run in runs
+            if str(run.get("headSha") or "") == sha
+            and workflow_matches(run)
         ]
 
         if exact:
-            return json.dumps({
-                "status": "FOUND",
-                "repo": repo,
-                "workflow": workflow,
-                "commit_sha": commit_sha,
-                "run": exact[0],
-            }, indent=2)
+            run = exact[0]
 
-        time.sleep(interval_i)
+            status = str(run.get("status") or "")
+            run_id = run.get("databaseId")
 
-    return json.dumps({
-        "status": "NOT_FOUND",
-        "repo": repo,
-        "workflow": workflow,
-        "commit_sha": commit_sha,
-    }, indent=2)
+            if status == "completed":
+                return json.dumps(
+                    {
+                        "run_id": run_id,
+                        "status": status,
+                        "conclusion": run.get("conclusion"),
+                        "head_sha": run.get("headSha"),
+                        "head_branch": run.get("headBranch"),
+                        "name": (
+                            run.get("workflowName")
+                            or run.get("name")
+                        ),
+                        "url": run.get("url"),
+                    },
+                    indent=2,
+                )
+
+            if time.time() >= deadline:
+                return json.dumps(
+                    {
+                        "run_id": run_id,
+                        "status": status,
+                        "conclusion": run.get("conclusion"),
+                        "head_sha": run.get("headSha"),
+                        "head_branch": run.get("headBranch"),
+                        "name": (
+                            run.get("workflowName")
+                            or run.get("name")
+                        ),
+                        "url": run.get("url"),
+                        "timed_out": True,
+                    },
+                    indent=2,
+                )
+
+        if time.time() >= deadline:
+            return json.dumps(
+                {
+                    "run_id": None,
+                    "status": "not_found",
+                    "commit_sha": sha,
+                    "workflow_filter": workflow_filter,
+                    "branch": branch_filter,
+                    "runs_seen": last_runs,
+                },
+                indent=2,
+            )
+
+        time.sleep(sleep_interval)
 
 def github_repair_loop(
     repo="",
