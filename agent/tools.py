@@ -335,6 +335,238 @@ def project_strategy(path="."):
     )
 
 
+
+def project_ci_workflow(
+    path=".",
+    branch="ai-agent-mvp",
+    workflow_name="Project CI",
+):
+    """
+    Generate a GitHub Actions workflow from project_strategy().
+
+    This function only generates workflow text.
+    It does not modify repository files.
+    """
+    import json
+
+    raw = project_strategy(path)
+
+    if isinstance(raw, str) and raw.startswith("ERROR:"):
+        return raw
+
+    try:
+        strategy = json.loads(raw)
+    except json.JSONDecodeError:
+        return "ERROR: invalid project strategy JSON"
+
+    build_system = strategy.get(
+        "build_system",
+        "unknown",
+    )
+
+    framework = strategy.get(
+        "framework",
+        "",
+    )
+
+    if build_system == "unknown":
+        return (
+            "ERROR: cannot generate CI for unknown project type"
+        )
+
+    lines = [
+        "name: " + workflow_name,
+        "",
+        "on:",
+        "  push:",
+        "    branches:",
+        f"      - {branch}",
+        "  pull_request:",
+        "  workflow_dispatch:",
+        "",
+        "permissions:",
+        "  contents: read",
+        "",
+        "jobs:",
+        "  build-test:",
+        "    runs-on: ubuntu-latest",
+        "",
+        "    steps:",
+        "      - name: Checkout",
+        "        uses: actions/checkout@v4",
+    ]
+
+    # --------------------------------------------------------
+    # Python
+    # --------------------------------------------------------
+
+    if build_system in {"pip", "pytest", "python"}:
+        lines += [
+            "",
+            "      - name: Setup Python",
+            "        uses: actions/setup-python@v5",
+            "        with:",
+            '          python-version: "3.x"',
+        ]
+
+        root = Path(path)
+
+        if (root / "requirements.txt").exists():
+            lines += [
+                "",
+                "      - name: Install dependencies",
+                "        run: |",
+                "          python -m pip install --upgrade pip",
+                "          pip install -r requirements.txt",
+            ]
+
+        lines += [
+            "",
+            "      - name: Run tests",
+            "        run: pytest",
+        ]
+
+    # --------------------------------------------------------
+    # Node
+    # --------------------------------------------------------
+
+    elif build_system == "npm":
+        lines += [
+            "",
+            "      - name: Setup Node.js",
+            "        uses: actions/setup-node@v4",
+            "        with:",
+            '          node-version: "22"',
+            "          cache: npm",
+            "",
+            "      - name: Install dependencies",
+            "        run: npm ci",
+            "",
+            "      - name: Run tests",
+            "        run: npm test",
+        ]
+
+    # --------------------------------------------------------
+    # Rust
+    # --------------------------------------------------------
+
+    elif build_system == "cargo":
+        lines += [
+            "",
+            "      - name: Rust toolchain info",
+            "        run: |",
+            "          rustc --version",
+            "          cargo --version",
+            "",
+            "      - name: Run tests",
+            "        run: cargo test",
+        ]
+
+    # --------------------------------------------------------
+    # Go
+    # --------------------------------------------------------
+
+    elif build_system == "go":
+        lines += [
+            "",
+            "      - name: Setup Go",
+            "        uses: actions/setup-go@v5",
+            "        with:",
+            '          go-version: "stable"',
+            "",
+            "      - name: Run tests",
+            "        run: go test ./...",
+        ]
+
+    # --------------------------------------------------------
+    # Gradle / Android
+    # --------------------------------------------------------
+
+    elif build_system == "gradle":
+        lines += [
+            "",
+            "      - name: Setup Java",
+            "        uses: actions/setup-java@v4",
+            "        with:",
+            '          distribution: "temurin"',
+            '          java-version: "17"',
+            "",
+            "      - name: Make Gradle wrapper executable",
+            "        run: chmod +x ./gradlew",
+            "",
+            "      - name: Run Gradle tests",
+            "        run: ./gradlew test",
+        ]
+
+        if framework == "android":
+            lines += [
+                "",
+                "      - name: Build debug APK",
+                "        run: ./gradlew assembleDebug",
+                "",
+                "      - name: Upload APK",
+                "        uses: actions/upload-artifact@v4",
+                "        with:",
+                "          name: debug-apk",
+                "          path: '**/build/outputs/apk/**/*.apk'",
+                "          if-no-files-found: error",
+                "          retention-days: 7",
+            ]
+
+    else:
+        return (
+            "ERROR: unsupported build system: "
+            + str(build_system)
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+def write_project_ci_workflow(
+    path=".",
+    destination=".github/workflows/project-ci.yml",
+    branch="ai-agent-mvp",
+    workflow_name="Project CI",
+):
+    """
+    Generate and write a project-specific GitHub Actions workflow.
+    """
+    from pathlib import Path
+
+    content = project_ci_workflow(
+        path=path,
+        branch=branch,
+        workflow_name=workflow_name,
+    )
+
+    if content.startswith("ERROR:"):
+        return content
+
+    destination_path = Path(destination)
+
+    # Restrict workflow writes to .github/workflows.
+    normalized = destination_path.as_posix()
+
+    if not normalized.startswith(".github/workflows/"):
+        return (
+            "ERROR: destination must be inside "
+            ".github/workflows/"
+        )
+
+    destination_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    destination_path.write_text(content)
+
+    return (
+        "PROJECT_CI_WRITE: SUCCESS\n"
+        f"PATH: {destination_path}\n"
+        + content
+    )
+
+
 def run_test(command, timeout="120"):
     command = command.strip()
 
@@ -1432,6 +1664,8 @@ TOOLS = {
     "git_stage": git_stage,
     "git_head_sha": git_head_sha,
     "project_strategy": project_strategy,
+    "project_ci_workflow": project_ci_workflow,
+    "write_project_ci_workflow": write_project_ci_workflow,
 }
 
 

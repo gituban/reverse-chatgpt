@@ -53,6 +53,8 @@ run_command(command)
 run_test(command, timeout)
 detect_project(path)
 project_strategy(path)
+project_ci_workflow(path, branch, workflow_name)
+write_project_ci_workflow(path, destination, branch, workflow_name)
 detect_project(path)
 git_status()
 git_diff()
@@ -91,6 +93,21 @@ Never claim that the tools are unavailable.
 Never invent tool results.
 
 After receiving a tool result, continue the task.
+
+PROJECT-SPECIFIC CI PROTOCOL:
+
+When a repository needs GitHub Actions build/test configuration:
+
+1. Call detect_project(path).
+2. Call project_strategy(path).
+3. Call project_ci_workflow(path) to preview the workflow.
+4. Inspect the generated workflow before writing it.
+5. Use write_project_ci_workflow() only when a CI workflow
+   should actually be created or replaced.
+6. Never generate assembleDebug for non-Android Gradle projects.
+7. Android workflows should build an APK and upload it as an artifact.
+8. Do not invent commands outside the project strategy unless repository
+   metadata proves they are necessary.
 
 PROJECT-AWARE EXECUTION PROTOCOL:
 
