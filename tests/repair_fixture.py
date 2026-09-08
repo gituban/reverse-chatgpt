@@ -1,7 +1,7 @@
 def add_numbers(a, b):
     # Intentional v0.8f repair fixture bug.
     # The autonomous agent should discover this from CI failure logs.
-    return a - b
+    return a + b
 
 
 def main():

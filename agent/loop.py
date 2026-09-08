@@ -21,13 +21,17 @@ def parse_args(text):
     current_value = []
 
     for line in text.splitlines():
-        if "=" in line and not line.startswith(" "):
+        match = re.match(
+            r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$",
+            line,
+        )
+
+        if match:
             if current_key is not None:
                 args[current_key] = "\n".join(current_value)
 
-            key, value = line.split("=", 1)
-            current_key = key.strip()
-            current_value = [value]
+            current_key = match.group(1)
+            current_value = [match.group(2)]
         elif current_key is not None:
             current_value.append(line)
 
@@ -192,6 +196,7 @@ class Agent:
         max_repair_attempts = 3
         repair_attempts = 0
         failed_repair_shas = set()
+        repair_active = False
 
         for iteration in range(20):
 
@@ -231,9 +236,45 @@ class Agent:
                     print("[agent] Final answer reached.")
                     return response
 
-            # If a tool was already executed and the model now
-            # gives a normal response, that response is final.
+            # A normal response is only final when no repair is active.
+            # During autonomous repair the Agent must continue until the
+            # exact new commit receives github_repair_context -> DONE.
             if not match:
+                if repair_active:
+                    print()
+                    print(
+                        "[agent] Repair is still active; "
+                        "continuing tool execution..."
+                    )
+                    print()
+
+                    self.history.append(
+                        "ASSISTANT:\n" + response
+                    )
+
+                    self.history.append(
+                        """REPAIR CONTROL:
+
+Autonomous repair is still active.
+
+A local fix or local test PASS is NOT completion.
+
+You must continue using tools until all of these are true:
+1. inspect git_diff();
+2. stage only intentional changed files with git_stage(path);
+3. create a repair commit with git_commit();
+4. push the current branch with git_push();
+5. obtain the NEW exact SHA with git_head_sha();
+6. call github_repair_context() for that NEW SHA;
+7. only stop when next_action=DONE.
+
+Do not claim that Git/GitHub tools are unavailable. They are executable
+tools in this Agent environment and have already been used successfully.
+"""
+                    )
+
+                    continue
+
                 print()
                 print("[agent] Final answer reached.")
                 return response
@@ -265,6 +306,8 @@ class Agent:
                     failed_sha = repair_data.get("commit_sha")
 
                     if next_action == "ANALYZE_AND_REPAIR":
+                        repair_active = True
+
                         if not failed_sha:
                             return (
                                 "ERROR: repair context has no commit SHA."
@@ -312,6 +355,8 @@ Requirements:
 """
 
                     elif next_action == "DONE":
+                        repair_active = False
+
                         repair_instruction = """
 REPAIR CONTROL:
 
