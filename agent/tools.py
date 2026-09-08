@@ -488,6 +488,184 @@ def github_workflow_status(run_id, repo=""):
 
 
 
+
+
+def github_repair_context(
+    commit_sha,
+    repo="",
+    workflow="agent-build-test.yml",
+    branch="",
+):
+    """
+    Produce a compact, machine-readable repair context for the Agent.
+
+    The context contains the exact commit, workflow run and failure logs.
+    It does not edit files or commit anything.
+    """
+    import json
+
+    lookup = github_workflow_run_for_commit(
+        commit_sha=commit_sha,
+        repo=repo,
+        workflow=workflow,
+        branch=branch,
+    )
+
+    try:
+        data = json.loads(lookup)
+    except json.JSONDecodeError:
+        return lookup
+
+    if data.get("status") != "FOUND":
+        return json.dumps(data, indent=2)
+
+    run = data["run"]
+    run_id = run["databaseId"]
+
+    result = github_workflow_result(
+        str(run_id),
+        repo=data["repo"],
+        include_logs="true",
+    )
+
+    try:
+        result_data = json.loads(result)
+    except json.JSONDecodeError:
+        result_data = {
+            "failed_logs": result,
+        }
+
+    conclusion = run.get("conclusion")
+
+    context = {
+        "repair_context": True,
+        "repository": data["repo"],
+        "workflow": data["workflow"],
+        "commit_sha": commit_sha,
+        "run_id": run_id,
+        "run_url": run.get("url", ""),
+        "head_branch": run.get("headBranch", ""),
+        "status": run.get("status"),
+        "conclusion": conclusion,
+        "failed_logs": result_data.get("failed_logs", ""),
+    }
+
+    if conclusion == "success":
+        context["next_action"] = "DONE"
+    else:
+        context["next_action"] = "ANALYZE_AND_REPAIR"
+
+    return json.dumps(
+        context,
+        indent=2,
+        ensure_ascii=False,
+    )
+
+def github_workflow_run_for_commit(
+    commit_sha,
+    repo="",
+    workflow="agent-build-test.yml",
+    branch="",
+    timeout="180",
+    interval="5",
+):
+    """
+    Find the GitHub Actions run for an exact commit SHA.
+
+    The commit SHA is the primary identity. A newer run from another
+    commit must never be returned.
+    """
+    import json
+    import subprocess
+    import time
+
+    if not commit_sha or len(commit_sha) < 7:
+        return "ERROR: valid commit SHA is required"
+
+    try:
+        timeout_i = int(timeout)
+        interval_i = int(interval)
+    except ValueError:
+        return "ERROR: timeout and interval must be numeric"
+
+    if timeout_i < 10 or timeout_i > 1800:
+        return "ERROR: timeout must be between 10 and 1800 seconds"
+
+    if interval_i < 1 or interval_i > 60:
+        return "ERROR: interval must be between 1 and 60 seconds"
+
+    if not repo:
+        r = subprocess.run(
+            ["gh", "repo", "view", "--json", "nameWithOwner"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if r.returncode != 0:
+            return "ERROR: unable to determine repository"
+
+        try:
+            repo = json.loads(r.stdout)["nameWithOwner"]
+        except Exception as exc:
+            return f"ERROR: invalid repository metadata: {exc}"
+
+    deadline = time.time() + timeout_i
+
+    while time.time() < deadline:
+        cmd = [
+            "gh", "run", "list",
+            "--repo", repo,
+            "--workflow", workflow,
+            "--commit", commit_sha,
+            "--limit", "20",
+            "--json",
+            "databaseId,status,conclusion,url,name,headBranch,headSha",
+        ]
+
+        if branch:
+            cmd.extend(["--branch", branch])
+
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        if r.returncode != 0:
+            return (
+                "ERROR: unable to query workflow runs\n"
+                + r.stderr.strip()
+            )
+
+        try:
+            runs = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            return "ERROR: invalid workflow-run JSON"
+
+        exact = [
+            run for run in runs
+            if run.get("headSha") == commit_sha
+        ]
+
+        if exact:
+            return json.dumps({
+                "status": "FOUND",
+                "repo": repo,
+                "workflow": workflow,
+                "commit_sha": commit_sha,
+                "run": exact[0],
+            }, indent=2)
+
+        time.sleep(interval_i)
+
+    return json.dumps({
+        "status": "NOT_FOUND",
+        "repo": repo,
+        "workflow": workflow,
+        "commit_sha": commit_sha,
+    }, indent=2)
+
 def github_repair_loop(
     repo="",
     branch="",
@@ -973,6 +1151,8 @@ TOOLS = {
     "github_workflow_result": github_workflow_result,
     "github_workflow_artifacts": github_workflow_artifacts,
     "github_repair_loop": github_repair_loop,
+    "github_workflow_run_for_commit": github_workflow_run_for_commit,
+    "github_repair_context": github_repair_context,
     "github_workflow_download_artifact": github_workflow_download_artifact,
 }
 
