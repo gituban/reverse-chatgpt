@@ -196,7 +196,15 @@ class Agent:
         max_repair_attempts = 3
         repair_attempts = 0
         failed_repair_shas = set()
-        repair_active = False
+
+        # Repair mode must become active BEFORE the first repair tool call.
+        # Otherwise the model can emit a normal refusal after git_head_sha()
+        # and terminate before github_repair_context() is ever reached.
+        repair_request = user_prompt.lower()
+        repair_active = (
+            "autonomous repair" in repair_request
+            or "repair protocol" in repair_request
+        )
 
         for iteration in range(20):
 
@@ -210,9 +218,12 @@ class Agent:
 
             # Only use the planner once, and only before any
             # tool has been successfully executed.
-            if not match and not planner_used:
+            if not match and (repair_active or not planner_used):
 
-                planner_used = True
+                # For ordinary requests planner fallback is one-shot.
+                # During autonomous repair it remains available until DONE.
+                if not repair_active:
+                    planner_used = True
 
                 planner_prompt = (
                     TOOL_PLANNER
@@ -232,6 +243,42 @@ class Agent:
                 if match:
                     response = planned
                 else:
+                    # During autonomous repair, a planner response without
+                    # a tool call is not allowed to terminate the workflow.
+                    if repair_active:
+                        print()
+                        print(
+                            "[agent] Planner produced no tool call while "
+                            "repair is active; retrying..."
+                        )
+                        print()
+
+                        self.history.append(
+                            "ASSISTANT:\n" + planned
+                        )
+
+                        self.history.append(
+                            """REPAIR CONTROL:
+
+Autonomous repair is still active.
+
+You MUST continue with executable tools.
+The next required action should be a tool call.
+
+If you have only obtained the HEAD SHA, call
+github_repair_context() for that exact SHA.
+
+If a local repair already passes, continue with:
+git_diff -> git_stage -> git_commit -> git_push ->
+git_head_sha -> github_repair_context.
+
+Do not stop until github_repair_context returns
+next_action=DONE.
+"""
+                        )
+
+                        continue
+
                     print()
                     print("[agent] Final answer reached.")
                     return response
