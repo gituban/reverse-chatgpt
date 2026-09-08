@@ -300,6 +300,83 @@ PLANNER RULES:
 """
 
 
+# DETERMINISTIC_FALLBACK_V11D
+def deterministic_tool_fallback(user_prompt):
+    """
+    High-confidence fallback for simple repository inspection requests.
+
+    This is deliberately conservative. It only handles intents where the
+    requested operation maps unambiguously to one executable tool.
+    """
+    text = user_prompt.strip().lower()
+
+    # Repository / directory listing.
+    listing_phrases = (
+        "apa isi file di folder ini",
+        "apa isi folder ini",
+        "isi folder ini",
+        "lihat isi folder",
+        "list files",
+        "list files here",
+        "list directory",
+        "show files",
+        "show files here",
+        "what files are here",
+        "what is in this folder",
+        "what's in this folder",
+    )
+
+    if any(phrase in text for phrase in listing_phrases):
+        return (
+            "<tool_call>\n"
+            "TOOL: list_files\n"
+            "ARGS:\n"
+            "path=.\n"
+            "</tool_call>"
+        )
+
+    # Git status.
+    if (
+        text in {"git status", "status git", "lihat git status"}
+        or "show git status" in text
+        or "cek git status" in text
+    ):
+        return (
+            "<tool_call>\n"
+            "TOOL: git_status\n"
+            "ARGS:\n"
+            "</tool_call>"
+        )
+
+    # Git diff.
+    if (
+        text in {"git diff", "lihat git diff"}
+        or "show git diff" in text
+        or "lihat perubahan git" in text
+    ):
+        return (
+            "<tool_call>\n"
+            "TOOL: git_diff\n"
+            "ARGS:\n"
+            "</tool_call>"
+        )
+
+    # Git log.
+    if (
+        text in {"git log", "lihat git log"}
+        or "show git log" in text
+        or "lihat commit terakhir" in text
+    ):
+        return (
+            "<tool_call>\n"
+            "TOOL: git_log\n"
+            "ARGS:\n"
+            "</tool_call>"
+        )
+
+    return None
+
+
 class Agent:
 
     def __init__(self):
@@ -417,6 +494,22 @@ class Agent:
                 planned = self.ask(planner_prompt)
 
                 match = TOOL_PATTERN.search(planned)
+
+                if not match:
+                    # DETERMINISTIC_FALLBACK_APPLY_V11D
+                    fallback = deterministic_tool_fallback(user_prompt)
+
+                    if fallback:
+                        print()
+                        print(
+                            "[agent] Planner returned no executable tool; "
+                            "using deterministic fallback..."
+                        )
+                        print()
+                        print(fallback)
+
+                        planned = fallback
+                        match = TOOL_PATTERN.search(planned)
 
                 if match:
                     response = planned
