@@ -52,6 +52,7 @@ write_file(path, content)
 run_command(command)
 run_test(command, timeout)
 detect_project(path)
+project_strategy(path)
 detect_project(path)
 git_status()
 git_diff()
@@ -90,6 +91,20 @@ Never claim that the tools are unavailable.
 Never invent tool results.
 
 After receiving a tool result, continue the task.
+
+PROJECT-AWARE EXECUTION PROTOCOL:
+
+Before selecting build or test commands for a repository:
+
+1. Call detect_project(path).
+2. Call project_strategy(path).
+3. Use the returned strategy instead of inventing commands.
+4. Prefer lightweight local validation before expensive build/test work.
+5. For Gradle/Android projects, prefer GitHub Actions for build/test execution.
+6. For unknown projects, inspect repository metadata before choosing commands.
+7. During autonomous repair, use project_strategy() to decide the validation
+   command for each repair attempt.
+8. Do not silently substitute another ecosystem's commands.
 
 AUTONOMOUS REPAIR PROTOCOL:
 

@@ -144,6 +144,149 @@ def detect_project(path="."):
     )
 
 
+
+def project_strategy(path="."):
+    """
+    Convert project detection into an execution strategy.
+
+    Returns machine-readable JSON describing lightweight local validation,
+    CI build/test commands, artifact expectations, and repair guidance.
+    """
+    import json
+
+    detected_raw = detect_project(path)
+
+    if isinstance(detected_raw, str) and detected_raw.startswith("ERROR:"):
+        return detected_raw
+
+    data = {}
+
+    for line in str(detected_raw).splitlines():
+        if ":" not in line:
+            continue
+
+        key, value = line.split(":", 1)
+        data[key.strip()] = value.strip()
+
+    project_type = data.get("PROJECT_TYPE", "unknown")
+    build_system = data.get("BUILD_SYSTEM", "unknown")
+
+    strategy = {
+        "path": path,
+        "project_type": project_type,
+        "build_system": build_system,
+        "local_validation": [],
+        "ci_commands": [],
+        "artifacts": [],
+        "repair_notes": [],
+    }
+
+    if build_system == "gradle":
+        strategy["local_validation"] = [
+            "./gradlew tasks --quiet",
+        ]
+
+        strategy["ci_commands"] = [
+            "./gradlew test",
+        ]
+
+        if project_type == "java_or_android":
+            strategy["ci_commands"].append(
+                "./gradlew assembleDebug"
+            )
+
+            strategy["artifacts"] = [
+                "**/build/outputs/apk/**/*.apk",
+            ]
+
+            strategy["repair_notes"] = [
+                "Prefer GitHub Actions for Gradle/Android build execution.",
+                "Inspect Gradle task failure before changing source code.",
+                "Do not assume assembleDebug exists for non-Android Gradle projects.",
+            ]
+
+    elif build_system == "maven":
+        strategy["local_validation"] = [
+            "mvn -q -DskipTests validate",
+        ]
+
+        strategy["ci_commands"] = [
+            "mvn test",
+        ]
+
+        strategy["repair_notes"] = [
+            "Use Maven lifecycle output to identify compile or test failures.",
+        ]
+
+    elif build_system == "npm":
+        strategy["local_validation"] = [
+            "npm test -- --help",
+        ]
+
+        strategy["ci_commands"] = [
+            "npm ci",
+            "npm test",
+        ]
+
+        strategy["repair_notes"] = [
+            "Use npm ci in CI for reproducible dependency installation.",
+            "Inspect package.json scripts before assuming custom build commands.",
+        ]
+
+    elif build_system in {"python", "pip", "pytest"} or project_type == "python":
+        strategy["local_validation"] = [
+            "python -m py_compile agent/loop.py agent/tools.py cli.py",
+        ]
+
+        strategy["ci_commands"] = [
+            "pytest",
+        ]
+
+        strategy["repair_notes"] = [
+            "Prefer targeted py_compile or targeted test execution before full pytest.",
+            "If pytest is unavailable, inspect project metadata before installing dependencies.",
+        ]
+
+    elif build_system == "cargo":
+        strategy["local_validation"] = [
+            "cargo check",
+        ]
+
+        strategy["ci_commands"] = [
+            "cargo test",
+        ]
+
+        strategy["repair_notes"] = [
+            "Use cargo check for fast compile validation before full tests.",
+        ]
+
+    elif build_system == "go":
+        strategy["local_validation"] = [
+            "go test ./...",
+        ]
+
+        strategy["ci_commands"] = [
+            "go test ./...",
+        ]
+
+        strategy["repair_notes"] = [
+            "Use package-level failures to narrow repair scope.",
+        ]
+
+    else:
+        strategy["repair_notes"] = [
+            "Project type is unknown.",
+            "Inspect repository files before selecting build or test commands.",
+            "Do not invent a build command.",
+        ]
+
+    return json.dumps(
+        strategy,
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
 def run_test(command, timeout="120"):
     command = command.strip()
 
@@ -1240,6 +1383,7 @@ TOOLS = {
     "github_workflow_download_artifact": github_workflow_download_artifact,
     "git_stage": git_stage,
     "git_head_sha": git_head_sha,
+    "project_strategy": project_strategy,
 }
 
 
