@@ -858,6 +858,20 @@ A prose progress report is NOT completion.
 
             result = execute_tool(tool_name, args)
 
+            # UNKNOWN_TOOL_RECOVERY_V12B
+            if (
+                isinstance(result, str)
+                and result.startswith("ERROR: unknown tool:")
+            ):
+                self.history.append(
+                    "SYSTEM CONTROL: The previous tool name is NOT part of "
+                    "this coding Agent's executable registry. Do not use "
+                    "external ChatGPT product tools such as api_tool, "
+                    "Plugin_Management, Automations, web, or other namespaces. "
+                    "Use only the tools explicitly listed in SYSTEM/TOOL_PLANNER. "
+                    "Choose the next valid coding-agent tool and continue."
+                )
+
             if self.logger:
                 self.logger.log_tool_result(
                     tool_name,

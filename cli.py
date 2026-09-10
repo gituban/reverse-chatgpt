@@ -95,6 +95,12 @@ def run_agent(agent, prompt, resume_state=None):
                 exc.cf_mitigated,
             )
 
+        if exc.body_preview:
+            print(
+                "Transport/bootstrap detail:",
+                exc.body_preview[:500],
+            )
+
         if agent.logger:
             print(
                 "Session:",

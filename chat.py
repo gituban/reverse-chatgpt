@@ -2,6 +2,7 @@ from gpt_session import Session
 from uuid import uuid4
 import time,json
 from curl_cffi import Response
+from curl_cffi.requests import exceptions as curl_exceptions
 
 class ChatTransportError(RuntimeError):
     """Raised when the ChatGPT transport cannot complete a request."""
@@ -176,14 +177,63 @@ class ChatGPT(Session):
 
 
     
-    def reply_chat(self,text):
-        
-        self.get_requirements()
-        json_data = self.get_chat_payload(text)
-        headers = self.get_headers()
-        
-        response = self.session.post('https://chatgpt.com/backend-anon/conversation', headers=headers, json=json_data,stream=True,impersonate="chrome")
-        
+    def reply_chat(self, text):
+        try:
+            self.get_requirements()
+
+            json_data = self.get_chat_payload(text)
+            headers = self.get_headers()
+
+            response = self.session.post(
+                "https://chatgpt.com/backend-anon/conversation",
+                headers=headers,
+                json=json_data,
+                stream=True,
+                impersonate="chrome",
+            )
+
+        except curl_exceptions.RequestsError as exc:
+            response = getattr(exc, "response", None)
+
+            status_code = None
+            cf_mitigated = None
+            body_preview = ""
+
+            if response is not None:
+                status_code = getattr(
+                    response,
+                    "status_code",
+                    None,
+                )
+
+                try:
+                    cf_mitigated = response.headers.get(
+                        "cf-mitigated"
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    body_preview = response.text[:1000]
+                except Exception:
+                    pass
+
+            raise ChatTransportError(
+                status_code=status_code,
+                url="https://chatgpt.com",
+                cf_mitigated=cf_mitigated,
+                body_preview=body_preview,
+            ) from exc
+
+        except Exception as exc:
+            # Normalize unexpected transport/bootstrap failures so the
+            # Agent session is paused instead of crashing.
+            raise ChatTransportError(
+                status_code=None,
+                url="https://chatgpt.com",
+                body_preview=str(exc)[:1000],
+            ) from exc
+
         if not response.ok:
             try:
                 body_preview = response.text[:1000]
@@ -193,14 +243,15 @@ class ChatGPT(Session):
             raise ChatTransportError(
                 status_code=response.status_code,
                 url=str(getattr(response, "url", "")),
-                cf_mitigated=response.headers.get("cf-mitigated"),
+                cf_mitigated=response.headers.get(
+                    "cf-mitigated"
+                ),
                 body_preview=body_preview,
             )
 
         for chunk in self.decode_stream(response):
-            # print(chunk, end="", flush=True)
             yield chunk
-        
+
        
 
 #uvicorn app:app --host 0.0.0.0 --port 5000
