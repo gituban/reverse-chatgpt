@@ -3,6 +3,7 @@ import re
 
 from chat import ChatGPT
 from agent.tools import execute_tool
+from agent.session_log import SessionLogger
 
 
 TOOL_PATTERN = re.compile(
@@ -382,20 +383,37 @@ class Agent:
     def __init__(self):
         self.gpt = ChatGPT()
         self.history = []
+        self.logger = None
 
-    def ask(self, prompt):
+    def ask(self, prompt, response_kind="model_response"):
         output = []
+
+        if self.logger:
+            self.logger.begin_response(response_kind)
 
         for chunk in self.gpt.reply_chat(prompt):
             if isinstance(chunk, str) and chunk:
                 print(chunk, end="", flush=True)
                 output.append(chunk)
 
+                if self.logger:
+                    self.logger.write_response_chunk(chunk)
+
         print()
+
+        if self.logger:
+            self.logger.end_response()
 
         return "".join(output)
 
     def run(self, user_prompt):
+
+        self.logger = SessionLogger(user_prompt)
+
+        print(
+            "[agent] Session log:",
+            self.logger.base
+        )
 
         self.history = [
             SYSTEM,
@@ -448,7 +466,10 @@ class Agent:
             print(f"[agent iteration {iteration + 1}]")
             print()
 
-            response = self.ask("\n\n".join(self.history))
+            response = self.ask(
+                "\n\n".join(self.history),
+                response_kind="model_response",
+            )
 
             match = TOOL_PATTERN.search(response)
 
@@ -491,7 +512,10 @@ class Agent:
                 print("[agent] No tool call detected. Planning tool action...")
                 print()
 
-                planned = self.ask(planner_prompt)
+                planned = self.ask(
+                    planner_prompt,
+                    response_kind="planner_response",
+                )
 
                 match = TOOL_PATTERN.search(planned)
 
@@ -687,7 +711,17 @@ A prose progress report is NOT completion.
             print("ARGS:", args)
             print("=" * 40)
 
+            if self.logger:
+                self.logger.log_tool_call(tool_name, args)
+
             result = execute_tool(tool_name, args)
+
+            if self.logger:
+                self.logger.log_tool_result(
+                    tool_name,
+                    args,
+                    result,
+                )
 
             # STATE_AWARE_PLANNER_V11C: persist real runtime state.
             last_tool_name = tool_name
