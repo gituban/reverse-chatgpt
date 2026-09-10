@@ -204,6 +204,22 @@ artifact state is actually verified.
 For artifact-producing autonomous projects, completion requires
 github_project_cycle_context for the exact final commit with
 next_action=DONE.
+
+
+V11F_FAILURE_LOG_PROTOCOL:
+
+When github_repair_context reports ANALYZE_AND_REPAIR, the runtime
+automatically retrieves github_workflow_result with failure logs for the
+failed run.
+
+Treat the AUTOMATIC CI FAILURE LOG added to history as authoritative failure
+evidence.
+
+Inspect that failure before choosing a repair. Do not repeatedly ask for the
+same failure log unless a new commit produces a new failed workflow run.
+
+For projects located below repository root, generated CI run commands execute
+from that project directory.
 """
 
 
@@ -758,6 +774,57 @@ A prose progress report is NOT completion.
 
                     if next_action == "ANALYZE_AND_REPAIR":
                         repair_active = True
+
+                        # AUTO_FAILURE_LOG_V11F
+                        # CI has genuinely failed. Fetch its logs immediately
+                        # instead of relying on a later LLM/planner decision.
+                        run_info = repair_data.get("run") or {}
+                        failed_run_id = (
+                            run_info.get("run_id")
+                            or repair_data.get("run_id")
+                        )
+
+                        if failed_run_id:
+                            failure_args = {
+                                "run_id": str(failed_run_id),
+                                "repo": args.get("repo", ""),
+                                "include_logs": True,
+                            }
+
+                            print()
+                            print(
+                                "[agent] CI failure detected; "
+                                "fetching failure logs automatically..."
+                            )
+                            print()
+
+                            if self.logger:
+                                self.logger.log_tool_call(
+                                    "github_workflow_result",
+                                    failure_args,
+                                )
+
+                            failure_result = execute_tool(
+                                "github_workflow_result",
+                                failure_args,
+                            )
+
+                            if self.logger:
+                                self.logger.log_tool_result(
+                                    "github_workflow_result",
+                                    failure_args,
+                                    failure_result,
+                                )
+
+                            last_tool_name = "github_workflow_result"
+                            last_tool_args = failure_args
+                            last_tool_result = failure_result
+
+                            self.history.append(
+                                "AUTOMATIC CI FAILURE LOG "
+                                f"(run {failed_run_id}):\n"
+                                + str(failure_result)
+                            )
 
                         if not failed_sha:
                             return (

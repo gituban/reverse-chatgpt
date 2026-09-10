@@ -426,7 +426,7 @@ def project_strategy(path="."):
 
 
 
-def project_ci_workflow(
+def _project_ci_workflow_base(
     path=".",
     branch="ai-agent-mvp",
     workflow_name="Project CI",
@@ -624,6 +624,71 @@ def project_ci_workflow(
         )
 
     return "\n".join(lines) + "\n"
+
+
+
+# SUBPROJECT_CI_WORKDIR_V11F
+def project_ci_workflow(*args, **kwargs):
+    """
+    Generate project CI and make shell `run:` steps execute from the
+    requested project directory when the project is not at repository root.
+
+    GitHub `uses:` steps (including upload-artifact) remain rooted at the
+    checked-out repository, so artifact globs continue to work repo-wide.
+    """
+    workflow = _project_ci_workflow_base(*args, **kwargs)
+
+    if not isinstance(workflow, str):
+        return workflow
+
+    if workflow.startswith("ERROR:"):
+        return workflow
+
+    if "path" in kwargs:
+        project_path = kwargs.get("path")
+    elif args:
+        project_path = args[0]
+    else:
+        project_path = "."
+
+    project_path = str(project_path or ".").strip()
+    project_path = project_path.replace("\\", "/").rstrip("/")
+
+    if project_path in ("", "."):
+        return workflow
+
+    # YAML injection safety: project paths must be simple repository-relative
+    # paths, never multiline values.
+    if (
+        "\n" in project_path
+        or "\r" in project_path
+        or project_path.startswith("/")
+        or project_path == ".."
+        or project_path.startswith("../")
+    ):
+        return "ERROR: project CI path must be repository-relative"
+
+    if "working-directory:" in workflow:
+        return workflow
+
+    needle = "    runs-on: ubuntu-latest\n"
+
+    if needle not in workflow:
+        return workflow
+
+    replacement = (
+        needle
+        + "\n"
+        + "    defaults:\n"
+        + "      run:\n"
+        + f"        working-directory: {project_path}\n"
+    )
+
+    return workflow.replace(
+        needle,
+        replacement,
+        1,
+    )
 
 
 def write_project_ci_workflow(
