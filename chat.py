@@ -3,6 +3,35 @@ from uuid import uuid4
 import time,json
 from curl_cffi import Response
 
+class ChatTransportError(RuntimeError):
+    """Raised when the ChatGPT transport cannot complete a request."""
+
+    def __init__(
+        self,
+        status_code=None,
+        url=None,
+        cf_mitigated=None,
+        body_preview="",
+    ):
+        self.status_code = status_code
+        self.url = url
+        self.cf_mitigated = cf_mitigated
+        self.body_preview = body_preview
+
+        parts = ["Chat transport failed"]
+
+        if status_code is not None:
+            parts.append(f"HTTP {status_code}")
+
+        if cf_mitigated:
+            parts.append(f"cf-mitigated={cf_mitigated}")
+
+        if url:
+            parts.append(str(url))
+
+        super().__init__(": ".join(parts))
+
+
 class ChatGPT(Session):
     
     def __init__(self,**kwargs):
@@ -156,7 +185,17 @@ class ChatGPT(Session):
         response = self.session.post('https://chatgpt.com/backend-anon/conversation', headers=headers, json=json_data,stream=True,impersonate="chrome")
         
         if not response.ok:
-            return
+            try:
+                body_preview = response.text[:1000]
+            except Exception:
+                body_preview = ""
+
+            raise ChatTransportError(
+                status_code=response.status_code,
+                url=str(getattr(response, "url", "")),
+                cf_mitigated=response.headers.get("cf-mitigated"),
+                body_preview=body_preview,
+            )
 
         for chunk in self.decode_stream(response):
             # print(chunk, end="", flush=True)

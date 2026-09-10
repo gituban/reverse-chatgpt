@@ -422,9 +422,10 @@ class Agent:
 
         return "".join(output)
 
-    def run(self, user_prompt):
+    def run(self, user_prompt, resume_state=None):
 
-        self.logger = SessionLogger(user_prompt)
+        if self.logger is None:
+            self.logger = SessionLogger(user_prompt)
 
         print(
             "[agent] Session log:",
@@ -474,13 +475,134 @@ class Agent:
 
         autonomous_done = False
 
+
+        # RESUME_STATE_V12A
+        resume_iteration = 0
+
+        if resume_state:
+            self.history = list(
+                resume_state.get(
+                    "history",
+                    self.history,
+                )
+            )
+
+            planner_used = bool(
+                resume_state.get(
+                    "planner_used",
+                    planner_used,
+                )
+            )
+
+            repair_attempts = int(
+                resume_state.get(
+                    "repair_attempts",
+                    repair_attempts,
+                )
+            )
+
+            failed_repair_shas = set(
+                resume_state.get(
+                    "failed_repair_shas",
+                    list(failed_repair_shas),
+                )
+            )
+
+            repair_active = bool(
+                resume_state.get(
+                    "repair_active",
+                    repair_active,
+                )
+            )
+
+            autonomous_active = bool(
+                resume_state.get(
+                    "autonomous_active",
+                    autonomous_active,
+                )
+            )
+
+            autonomous_done = bool(
+                resume_state.get(
+                    "autonomous_done",
+                    autonomous_done,
+                )
+            )
+
+            last_tool_name = resume_state.get(
+                "last_tool_name"
+            )
+
+            last_tool_args = resume_state.get(
+                "last_tool_args"
+            )
+
+            last_tool_result = resume_state.get(
+                "last_tool_result"
+            )
+
+            resume_iteration = int(
+                resume_state.get(
+                    "iteration",
+                    0,
+                )
+            )
+
+            self.history.append(
+                """RESUME CONTROL:
+
+This Agent session has been restored from persistent state.
+
+Continue from the CURRENT repository, Git, CI and artifact state.
+
+Do not restart completed work.
+Do not repeat successful tool operations unnecessarily.
+Re-inspect external state when necessary because GitHub Actions may have
+continued while the Agent was paused.
+"""
+            )
+
+            self.logger.log_event(
+                "agent_state_restored",
+                {
+                    "resume_iteration": resume_iteration,
+                    "last_tool_name": last_tool_name,
+                },
+            )
+
         max_iterations = 40 if autonomous_active else 20
 
-        for iteration in range(max_iterations):
+        for iteration in range(
+            resume_iteration,
+            resume_iteration + max_iterations,
+        ):
 
             print()
             print(f"[agent iteration {iteration + 1}]")
             print()
+
+            # AUTO_SAVE_STATE_V12A
+            if self.logger:
+                self.logger.save_state(
+                    {
+                        "version": 1,
+                        "status": "running",
+                        "user_prompt": user_prompt,
+                        "history": self.history,
+                        "planner_used": planner_used,
+                        "repair_attempts": repair_attempts,
+                        "failed_repair_shas": sorted(
+                            failed_repair_shas
+                        ),
+                        "repair_active": repair_active,
+                        "autonomous_active": autonomous_active,
+                        "autonomous_done": autonomous_done,
+                        "last_tool_name": last_tool_name,
+                        "last_tool_args": last_tool_args,
+                        "last_tool_result": last_tool_result,
+                        "iteration": iteration,
+                    }
+                )
 
             response = self.ask(
                 "\n\n".join(self.history),
@@ -716,6 +838,10 @@ A prose progress report is NOT completion.
 
                 print()
                 print("[agent] Final answer reached.")
+
+                if self.logger:
+                    self.logger.mark_status("completed")
+
                 return response
 
             tool_name = match.group("tool").strip()
@@ -743,6 +869,29 @@ A prose progress report is NOT completion.
             last_tool_name = tool_name
             last_tool_args = args
             last_tool_result = result
+
+            # TOOL_RESULT_STATE_SAVE_V12A
+            if self.logger:
+                self.logger.save_state(
+                    {
+                        "version": 1,
+                        "status": "running",
+                        "user_prompt": user_prompt,
+                        "history": self.history,
+                        "planner_used": planner_used,
+                        "repair_attempts": repair_attempts,
+                        "failed_repair_shas": sorted(
+                            failed_repair_shas
+                        ),
+                        "repair_active": repair_active,
+                        "autonomous_active": autonomous_active,
+                        "autonomous_done": autonomous_done,
+                        "last_tool_name": last_tool_name,
+                        "last_tool_args": last_tool_args,
+                        "last_tool_result": last_tool_result,
+                        "iteration": iteration,
+                    }
+                )
 
             # AUTONOMOUS_DONE_TRACKER
             if tool_name == "github_project_cycle_context":

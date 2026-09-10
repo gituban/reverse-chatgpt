@@ -10,35 +10,35 @@ from pathlib import Path
 
 class SessionLogger:
     """
-    Persistent per-run Agent logger.
+    Persistent per-run logger + resumable Agent state.
 
     Files:
       prompt.txt
       transcript.log
       events.jsonl
       summary.json
-
-    Every important write is flushed immediately so an interrupted run
-    still leaves useful recovery/audit information on disk.
+      state.json
     """
 
     def __init__(self, user_prompt, base_dir="logs"):
         now = datetime.now().astimezone()
+
         session_id = (
             now.strftime("%Y%m%d_%H%M%S")
             + "_"
             + uuid.uuid4().hex[:6]
         )
 
-        self.started_at = now.isoformat()
         self.session_id = session_id
+        self.started_at = now.isoformat()
+
         self.base = Path(base_dir) / session_id
         self.base.mkdir(parents=True, exist_ok=True)
 
-        self.prompt_path = self.base / "prompt.txt"
-        self.transcript_path = self.base / "transcript.log"
-        self.events_path = self.base / "events.jsonl"
-        self.summary_path = self.base / "summary.json"
+        self._set_paths()
+
+        self.status = "running"
+        self.last_event = None
 
         self.counts = {
             "model_response": 0,
@@ -50,8 +50,6 @@ class SessionLogger:
             "artifact": 0,
         }
 
-        self.status = "running"
-        self.last_event = None
         self._response_kind = None
         self._response_buffer = []
 
@@ -60,8 +58,12 @@ class SessionLogger:
             "started_at": self.started_at,
             "pid": os.getpid(),
             "cwd": os.getcwd(),
-            "branch": self._git(["rev-parse", "--abbrev-ref", "HEAD"]),
-            "head_start": self._git(["rev-parse", "HEAD"]),
+            "branch": self._git(
+                ["rev-parse", "--abbrev-ref", "HEAD"]
+            ),
+            "head_start": self._git(
+                ["rev-parse", "HEAD"]
+            ),
         }
 
         self.prompt_path.write_text(
@@ -92,6 +94,103 @@ class SessionLogger:
         self._write_summary()
         atexit.register(self._atexit_finalize)
 
+    @classmethod
+    def open_existing(cls, session_dir):
+        obj = cls.__new__(cls)
+
+        obj.base = Path(session_dir).resolve()
+
+        if not obj.base.is_dir():
+            raise FileNotFoundError(
+                f"session directory does not exist: {obj.base}"
+            )
+
+        obj._set_paths()
+
+        if not obj.state_path.exists():
+            raise FileNotFoundError(
+                f"state.json not found in {obj.base}"
+            )
+
+        summary = {}
+
+        if obj.summary_path.exists():
+            try:
+                summary = json.loads(
+                    obj.summary_path.read_text(
+                        encoding="utf-8"
+                    )
+                )
+            except Exception:
+                summary = {}
+
+        obj.session_id = summary.get(
+            "session_id",
+            obj.base.name,
+        )
+
+        obj.started_at = summary.get(
+            "started_at",
+            datetime.now().astimezone().isoformat(),
+        )
+
+        obj.status = "resuming"
+        obj.last_event = summary.get("last_event")
+
+        obj.counts = summary.get(
+            "counts",
+            {
+                "model_response": 0,
+                "planner_response": 0,
+                "tool_call": 0,
+                "tool_result": 0,
+                "commit": 0,
+                "ci": 0,
+                "artifact": 0,
+            },
+        )
+
+        obj._response_kind = None
+        obj._response_buffer = []
+
+        obj.metadata = {
+            "session_id": obj.session_id,
+            "started_at": obj.started_at,
+            "pid": os.getpid(),
+            "cwd": os.getcwd(),
+            "branch": obj._git(
+                ["rev-parse", "--abbrev-ref", "HEAD"]
+            ),
+            "head_start": summary.get("head_start"),
+        }
+
+        obj._append_transcript(
+            "\n==================================================\n"
+            f"SESSION RESUMED: {datetime.now().astimezone().isoformat()}\n"
+            f"CURRENT HEAD: {obj._git(['rev-parse', 'HEAD'])}\n"
+            "==================================================\n"
+        )
+
+        obj.log_event(
+            "session_resume",
+            {
+                "head": obj._git(["rev-parse", "HEAD"]),
+                "cwd": os.getcwd(),
+            },
+        )
+
+        obj._write_summary()
+        atexit.register(obj._atexit_finalize)
+
+        return obj
+
+    def _set_paths(self):
+        self.prompt_path = self.base / "prompt.txt"
+        self.transcript_path = self.base / "transcript.log"
+        self.events_path = self.base / "events.jsonl"
+        self.summary_path = self.base / "summary.json"
+        self.state_path = self.base / "state.json"
+
     def _git(self, args):
         try:
             return subprocess.check_output(
@@ -106,10 +205,6 @@ class SessionLogger:
         return datetime.now().astimezone().isoformat()
 
     def _redact(self, value):
-        """
-        Conservative redaction for obvious credentials/tokens.
-        Normal source code, commit SHAs, run IDs and artifact data remain.
-        """
         if not isinstance(value, str):
             return value
 
@@ -129,31 +224,37 @@ class SessionLogger:
             ),
         ]
 
-        out = value
-        for pattern, repl in patterns:
-            out = re.sub(pattern, repl, out)
+        result = value
 
-        return out
+        for pattern, replacement in patterns:
+            result = re.sub(
+                pattern,
+                replacement,
+                result,
+            )
+
+        return result
 
     def _append_transcript(self, text):
-        text = self._redact(str(text))
-
         with self.transcript_path.open(
             "a",
             encoding="utf-8",
         ) as f:
-            f.write(text)
+            f.write(self._redact(str(text)))
             f.flush()
 
-    def log_event(self, event_type, data=None, category=None):
-        data = data or {}
-
+    def log_event(
+        self,
+        event_type,
+        data=None,
+        category=None,
+    ):
         record = {
             "timestamp": self._now(),
             "session_id": self.session_id,
             "event": event_type,
             "category": category,
-            "data": data,
+            "data": data or {},
         }
 
         raw = json.dumps(
@@ -201,8 +302,6 @@ class SessionLogger:
             return
 
         self._response_buffer.append(chunk)
-
-        # Persist partial output immediately.
         self._append_transcript(chunk)
 
     def end_response(self):
@@ -216,6 +315,26 @@ class SessionLogger:
             {
                 "response": response,
                 "length": len(response),
+            },
+        )
+
+        self._response_kind = None
+        self._response_buffer = []
+
+    def abort_response(self, reason):
+        response = "".join(self._response_buffer)
+
+        self._append_transcript(
+            "\n[RESPONSE INTERRUPTED]\n"
+            f"{reason}\n"
+        )
+
+        self.log_event(
+            "response_interrupted",
+            {
+                "kind": self._response_kind,
+                "partial_response": response,
+                "reason": str(reason),
             },
         )
 
@@ -239,7 +358,12 @@ class SessionLogger:
             category=self._tool_category(tool_name),
         )
 
-    def log_tool_result(self, tool_name, args, result):
+    def log_tool_result(
+        self,
+        tool_name,
+        args,
+        result,
+    ):
         category = self._tool_category(tool_name)
 
         self._append_transcript(
@@ -258,8 +382,6 @@ class SessionLogger:
             },
         )
 
-        # Add explicit high-level event so commit/CI/artifact can be
-        # searched without parsing generic tool_result records.
         if category:
             self.log_event(
                 category,
@@ -289,6 +411,49 @@ class SessionLogger:
 
         return None
 
+    def save_state(self, state):
+        state = dict(state)
+
+        state["saved_at"] = self._now()
+        state["session_id"] = self.session_id
+        state["cwd"] = os.getcwd()
+        state["head_at_save"] = self._git(
+            ["rev-parse", "HEAD"]
+        )
+
+        tmp = self.state_path.with_suffix(
+            ".json.tmp"
+        )
+
+        tmp.write_text(
+            json.dumps(
+                state,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        tmp.replace(self.state_path)
+
+        self.log_event(
+            "state_saved",
+            {
+                "iteration": state.get("iteration"),
+                "status": state.get("status"),
+                "head": state.get("head_at_save"),
+            },
+        )
+
+    def load_state(self):
+        return json.loads(
+            self.state_path.read_text(
+                encoding="utf-8"
+            )
+        )
+
     def mark_status(self, status):
         self.status = status
         self._write_summary()
@@ -300,16 +465,21 @@ class SessionLogger:
             "last_updated": self._now(),
             "last_event": self.last_event,
             "counts": self.counts,
-            "head_current": self._git(["rev-parse", "HEAD"]),
+            "head_current": self._git(
+                ["rev-parse", "HEAD"]
+            ),
             "paths": {
                 "prompt": str(self.prompt_path),
                 "transcript": str(self.transcript_path),
                 "events": str(self.events_path),
                 "summary": str(self.summary_path),
+                "state": str(self.state_path),
             },
         }
 
-        tmp = self.summary_path.with_suffix(".json.tmp")
+        tmp = self.summary_path.with_suffix(
+            ".json.tmp"
+        )
 
         tmp.write_text(
             json.dumps(
@@ -324,7 +494,10 @@ class SessionLogger:
         tmp.replace(self.summary_path)
 
     def _atexit_finalize(self):
-        if self.status == "running":
+        if self.status in {
+            "running",
+            "resuming",
+        }:
             self.status = "process_exited"
 
         try:
