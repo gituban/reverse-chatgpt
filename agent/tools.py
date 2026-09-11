@@ -81,6 +81,720 @@ def write_file(path, content):
         return f"ERROR: {e}"
 
 
+def detect_project(path="."):
+    base = Path(path).resolve()
+
+    if not base.exists():
+        return f"ERROR: path does not exist: {path}"
+
+    if not base.is_dir():
+        return f"ERROR: not a directory: {path}"
+
+    files = {item.name for item in base.iterdir() if item.is_file()}
+
+    project_type = "unknown"
+    build_system = "unknown"
+    test_command = ""
+
+    if "gradlew" in files or "build.gradle" in files or "build.gradle.kts" in files:
+        project_type = "java_or_android"
+        build_system = "gradle"
+        test_command = "./gradlew test"
+
+    elif "pom.xml" in files:
+        project_type = "java"
+        build_system = "maven"
+        test_command = "mvn test"
+
+    elif "package.json" in files:
+        project_type = "node"
+        build_system = "npm"
+        test_command = "npm test"
+
+    elif "pyproject.toml" in files:
+        project_type = "python"
+        build_system = "python"
+        test_command = "pytest"
+
+    elif "pytest.ini" in files or "tox.ini" in files:
+        project_type = "python"
+        build_system = "pytest"
+        test_command = "pytest"
+
+    elif "requirements.txt" in files:
+        project_type = "python"
+        build_system = "pip"
+        test_command = "pytest"
+
+    elif "Cargo.toml" in files:
+        project_type = "rust"
+        build_system = "cargo"
+        test_command = "cargo test"
+
+    elif "go.mod" in files:
+        project_type = "go"
+        build_system = "go"
+        test_command = "go test ./..."
+
+    return (
+        f"PROJECT_PATH: {base}\n"
+        f"PROJECT_TYPE: {project_type}\n"
+        f"BUILD_SYSTEM: {build_system}\n"
+        f"TEST_COMMAND: {test_command or '(unknown)'}"
+    )
+
+
+
+def project_strategy(path="."):
+    """
+    Convert project detection into an execution strategy.
+
+    Returns machine-readable JSON describing lightweight local validation,
+    CI build/test commands, artifact expectations, and repair guidance.
+    """
+    import json
+    from pathlib import Path
+
+    detected_raw = detect_project(path)
+
+    if isinstance(detected_raw, str) and detected_raw.startswith("ERROR:"):
+        return detected_raw
+
+    data = {}
+
+    for line in str(detected_raw).splitlines():
+        if ":" not in line:
+            continue
+
+        key, value = line.split(":", 1)
+        data[key.strip()] = value.strip()
+
+    project_type = data.get("PROJECT_TYPE", "unknown")
+    build_system = data.get("BUILD_SYSTEM", "unknown")
+
+    strategy = {
+        "path": path,
+        "project_type": project_type,
+        "build_system": build_system,
+        "local_validation": [],
+        "ci_commands": [],
+        "artifacts": [],
+        "repair_notes": [],
+    }
+
+    if build_system == "gradle":
+        root = Path(path)
+
+        android_markers = [
+            root / "AndroidManifest.xml",
+            root / "app" / "src" / "main" / "AndroidManifest.xml",
+        ]
+
+        android_plugin_markers = (
+            "com.android.application",
+            "com.android.library",
+        )
+
+        gradle_text = ""
+
+        for candidate in [
+            root / "build.gradle",
+            root / "build.gradle.kts",
+            root / "app" / "build.gradle",
+            root / "app" / "build.gradle.kts",
+        ]:
+            if candidate.exists():
+                try:
+                    gradle_text += "\n" + candidate.read_text(
+                        errors="ignore"
+                    )
+                except OSError:
+                    pass
+
+        is_android = (
+            any(x.exists() for x in android_markers)
+            or any(x in gradle_text for x in android_plugin_markers)
+        )
+
+        strategy["framework"] = (
+            "android" if is_android else "gradle"
+        )
+
+        # Per project policy, Gradle/Android builds belong on
+        # GitHub Actions rather than this orchestration machine.
+        strategy["local_validation"] = []
+
+        strategy["ci_commands"] = [
+            "./gradlew test",
+        ]
+
+        if is_android:
+            strategy["project_type"] = "android"
+
+            strategy["ci_commands"].append(
+                "./gradlew assembleDebug"
+            )
+
+            strategy["artifacts"] = [
+                "**/build/outputs/apk/**/*.apk",
+            ]
+
+            strategy["repair_notes"] = [
+                "This is an Android Gradle project.",
+                "Run Gradle build/test on GitHub Actions.",
+                "Use assembleDebug for APK validation.",
+                "Inspect Gradle failure logs before modifying source.",
+            ]
+
+        else:
+            strategy["repair_notes"] = [
+                "This is a non-Android Gradle project.",
+                "Run Gradle tests on GitHub Actions.",
+                "Do not invoke assembleDebug.",
+            ]
+
+    elif build_system == "maven":
+        strategy["local_validation"] = [
+            "mvn -q -DskipTests validate",
+        ]
+
+        strategy["ci_commands"] = [
+            "mvn test",
+        ]
+
+        strategy["repair_notes"] = [
+            "Use Maven lifecycle output to identify compile or test failures.",
+        ]
+
+    elif build_system == "npm":
+        strategy["local_validation"] = [
+            "npm test -- --help",
+        ]
+
+        strategy["ci_commands"] = [
+            "npm ci",
+            "npm test",
+        ]
+
+        strategy["repair_notes"] = [
+            "Use npm ci in CI for reproducible dependency installation.",
+            "Inspect package.json scripts before assuming custom build commands.",
+        ]
+
+    elif build_system in {"python", "pip", "pytest"} or project_type == "python":
+        root = Path(path)
+
+        pytest_detected = False
+
+        # Explicit pytest configuration is strong evidence.
+        for candidate in [
+            root / "pytest.ini",
+            root / "conftest.py",
+        ]:
+            if candidate.exists():
+                pytest_detected = True
+
+        # pyproject.toml may contain pytest configuration/dependency.
+        pyproject = root / "pyproject.toml"
+        if pyproject.exists():
+            try:
+                text = pyproject.read_text(errors="ignore").lower()
+                if "pytest" in text:
+                    pytest_detected = True
+            except OSError:
+                pass
+
+        # Detect conventional pytest test filenames.
+        #
+        # Inside a Git repository, only tracked files may influence
+        # project strategy. This prevents unrelated local experiments
+        # or generated/untracked files from changing CI behavior.
+        #
+        # Outside Git (for example temporary fixture directories used
+        # by tests), fall back to filesystem discovery.
+        import subprocess
+
+        git_root_result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "rev-parse",
+                "--show-toplevel",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        if git_root_result.returncode == 0:
+            tracked_result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "ls-files",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            if tracked_result.returncode == 0:
+                tracked_files = tracked_result.stdout.splitlines()
+
+                if any(
+                    Path(name).name.startswith("test_")
+                    and Path(name).suffix == ".py"
+                    for name in tracked_files
+                ):
+                    pytest_detected = True
+        else:
+            try:
+                if any(root.rglob("test_*.py")):
+                    pytest_detected = True
+            except OSError:
+                pass
+
+        strategy["framework"] = (
+            "pytest" if pytest_detected else "python"
+        )
+
+        strategy["local_validation"] = [
+            "python -m compileall -q .",
+        ]
+
+        if pytest_detected:
+            strategy["ci_commands"] = [
+                "python -m pytest",
+            ]
+
+            strategy["repair_notes"] = [
+                "Pytest usage was detected from repository metadata or test files.",
+                "Use python -m pytest rather than assuming a pytest executable is on PATH.",
+                "Install pytest in CI when the project dependencies do not already provide it.",
+            ]
+        else:
+            strategy["ci_commands"] = [
+                "python -m compileall -q .",
+            ]
+
+            strategy["repair_notes"] = [
+                "No reliable pytest usage was detected.",
+                "Do not invent a pytest test suite.",
+                "Use Python bytecode compilation as the default CI validation.",
+            ]
+
+    elif build_system == "cargo":
+        strategy["local_validation"] = [
+            "cargo check",
+        ]
+
+        strategy["ci_commands"] = [
+            "cargo test",
+        ]
+
+        strategy["repair_notes"] = [
+            "Use cargo check for fast compile validation before full tests.",
+        ]
+
+    elif build_system == "go":
+        strategy["local_validation"] = [
+            "go test ./...",
+        ]
+
+        strategy["ci_commands"] = [
+            "go test ./...",
+        ]
+
+        strategy["repair_notes"] = [
+            "Use package-level failures to narrow repair scope.",
+        ]
+
+    else:
+        strategy["repair_notes"] = [
+            "Project type is unknown.",
+            "Inspect repository files before selecting build or test commands.",
+            "Do not invent a build command.",
+        ]
+
+    return json.dumps(
+        strategy,
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+
+def _project_ci_workflow_base(
+    path=".",
+    branch="ai-agent-mvp",
+    workflow_name="Project CI",
+):
+    """
+    Generate a GitHub Actions workflow from project_strategy().
+
+    This function only generates workflow text.
+    It does not modify repository files.
+    """
+    import json
+
+    raw = project_strategy(path)
+
+    if isinstance(raw, str) and raw.startswith("ERROR:"):
+        return raw
+
+    try:
+        strategy = json.loads(raw)
+    except json.JSONDecodeError:
+        return "ERROR: invalid project strategy JSON"
+
+    build_system = strategy.get(
+        "build_system",
+        "unknown",
+    )
+
+    framework = strategy.get(
+        "framework",
+        "",
+    )
+
+    if build_system == "unknown":
+        return (
+            "ERROR: cannot generate CI for unknown project type"
+        )
+
+    lines = [
+        "name: " + workflow_name,
+        "",
+        "on:",
+        "  push:",
+        "    branches:",
+        f"      - {branch}",
+        "  pull_request:",
+        "  workflow_dispatch:",
+        "",
+        "permissions:",
+        "  contents: read",
+        "",
+        "jobs:",
+        "  build-test:",
+        "    runs-on: ubuntu-latest",
+        "",
+        "    steps:",
+        "      - name: Checkout",
+        "        uses: actions/checkout@v4",
+    ]
+
+    # --------------------------------------------------------
+    # Python
+    # --------------------------------------------------------
+
+    if build_system in {"pip", "pytest", "python"}:
+        lines += [
+            "",
+            "      - name: Setup Python",
+            "        uses: actions/setup-python@v5",
+            "        with:",
+            '          python-version: "3.12"',
+        ]
+
+        root = Path(path)
+
+        if (root / "requirements.txt").exists():
+            lines += [
+                "",
+                "      - name: Install dependencies",
+                "        run: |",
+                "          python -m pip install --upgrade pip",
+                "          pip install -r requirements.txt",
+            ]
+
+        framework = strategy.get("framework", "python")
+
+        if framework == "pytest":
+            # Ensure pytest exists even when requirements.txt does not
+            # explicitly provide it.
+            lines += [
+                "",
+                "      - name: Ensure pytest",
+                "        run: python -m pip install pytest",
+                "",
+                "      - name: Run tests",
+                "        run: python -m pytest",
+            ]
+        else:
+            lines += [
+                "",
+                "      - name: Validate Python sources",
+                "        run: python -m compileall -q .",
+            ]
+
+    # --------------------------------------------------------
+    # Node
+    # --------------------------------------------------------
+
+    elif build_system == "npm":
+        lines += [
+            "",
+            "      - name: Setup Node.js",
+            "        uses: actions/setup-node@v4",
+            "        with:",
+            '          node-version: "22"',
+            "          cache: npm",
+            "",
+            "      - name: Install dependencies",
+            "        run: npm ci",
+            "",
+            "      - name: Run tests",
+            "        run: npm test",
+        ]
+
+    # --------------------------------------------------------
+    # Rust
+    # --------------------------------------------------------
+
+    elif build_system == "cargo":
+        lines += [
+            "",
+            "      - name: Rust toolchain info",
+            "        run: |",
+            "          rustc --version",
+            "          cargo --version",
+            "",
+            "      - name: Run tests",
+            "        run: cargo test",
+        ]
+
+    # --------------------------------------------------------
+    # Go
+    # --------------------------------------------------------
+
+    elif build_system == "go":
+        lines += [
+            "",
+            "      - name: Setup Go",
+            "        uses: actions/setup-go@v5",
+            "        with:",
+            '          go-version: "stable"',
+            "",
+            "      - name: Run tests",
+            "        run: go test ./...",
+        ]
+
+    # --------------------------------------------------------
+    # Gradle / Android
+    # --------------------------------------------------------
+
+    elif build_system == "gradle":
+        lines += [
+            "",
+            "      - name: Setup Java",
+            "        uses: actions/setup-java@v4",
+            "        with:",
+            '          distribution: "temurin"',
+            '          java-version: "17"',
+            "",
+            "      - name: Make Gradle wrapper executable",
+            "        run: chmod +x ./gradlew",
+            "",
+            "      - name: Run Gradle tests",
+            "        run: ./gradlew test",
+        ]
+
+        if framework == "android":
+            lines += [
+                "",
+                "      - name: Build debug APK",
+                "        run: ./gradlew assembleDebug",
+                "",
+                "      - name: Upload APK",
+                "        uses: actions/upload-artifact@v4",
+                "        with:",
+                "          name: debug-apk",
+                "          path: '**/build/outputs/apk/**/*.apk'",
+                "          if-no-files-found: error",
+                "          retention-days: 7",
+            ]
+
+    else:
+        return (
+            "ERROR: unsupported build system: "
+            + str(build_system)
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+
+# SUBPROJECT_CI_WORKDIR_V11F
+def project_ci_workflow(*args, **kwargs):
+    """
+    Generate project CI and make shell `run:` steps execute from the
+    requested project directory when the project is not at repository root.
+
+    GitHub `uses:` steps (including upload-artifact) remain rooted at the
+    checked-out repository, so artifact globs continue to work repo-wide.
+    """
+    workflow = _project_ci_workflow_base(*args, **kwargs)
+
+    if not isinstance(workflow, str):
+        return workflow
+
+    if workflow.startswith("ERROR:"):
+        return workflow
+
+    if "path" in kwargs:
+        project_path = kwargs.get("path")
+    elif args:
+        project_path = args[0]
+    else:
+        project_path = "."
+
+    project_path = str(project_path or ".").strip()
+    project_path = project_path.replace("\\", "/").rstrip("/")
+
+    if project_path in ("", "."):
+        return workflow
+
+    # YAML injection safety: project paths must be simple repository-relative
+    # paths, never multiline values.
+    if (
+        "\n" in project_path
+        or "\r" in project_path
+        or project_path.startswith("/")
+        or project_path == ".."
+        or project_path.startswith("../")
+    ):
+        return "ERROR: project CI path must be repository-relative"
+
+    if "working-directory:" in workflow:
+        return workflow
+
+    needle = "    runs-on: ubuntu-latest\n"
+
+    if needle not in workflow:
+        return workflow
+
+    replacement = (
+        needle
+        + "\n"
+        + "    defaults:\n"
+        + "      run:\n"
+        + f"        working-directory: {project_path}\n"
+    )
+
+    return workflow.replace(
+        needle,
+        replacement,
+        1,
+    )
+
+
+def write_project_ci_workflow(
+    path=".",
+    destination=".github/workflows/project-ci.yml",
+    branch="ai-agent-mvp",
+    workflow_name="Project CI",
+):
+    """
+    Generate and write a project-specific GitHub Actions workflow.
+    """
+    from pathlib import Path
+
+    content = project_ci_workflow(
+        path=path,
+        branch=branch,
+        workflow_name=workflow_name,
+    )
+
+    if content.startswith("ERROR:"):
+        return content
+
+    destination_path = Path(destination)
+
+    # Restrict workflow writes to .github/workflows.
+    normalized = destination_path.as_posix()
+
+    if not normalized.startswith(".github/workflows/"):
+        return (
+            "ERROR: destination must be inside "
+            ".github/workflows/"
+        )
+
+    destination_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    destination_path.write_text(content)
+
+    return (
+        "PROJECT_CI_WRITE: SUCCESS\n"
+        f"PATH: {destination_path}\n"
+        + content
+    )
+
+
+def run_test(command, timeout="120"):
+    command = command.strip()
+
+    if not command:
+        return "ERROR: test command cannot be empty"
+
+    try:
+        timeout_seconds = int(timeout)
+    except ValueError:
+        return "ERROR: timeout must be an integer"
+
+    if timeout_seconds <= 0:
+        return "ERROR: timeout must be greater than 0"
+
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+
+        status = "PASS" if result.returncode == 0 else "FAIL"
+
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+
+        return (
+            f"TEST_RESULT: {status}\n"
+            f"EXIT_CODE: {result.returncode}\n"
+            f"COMMAND: {command}\n"
+            f"STDOUT:\n{stdout or '(empty)'}\n"
+            f"STDERR:\n{stderr or '(empty)'}"
+        )
+
+    except subprocess.TimeoutExpired as e:
+        stdout = e.stdout or ""
+        stderr = e.stderr or ""
+
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+
+        return (
+            "TEST_RESULT: TIMEOUT\n"
+            f"EXIT_CODE: -1\n"
+            f"COMMAND: {command}\n"
+            f"TIMEOUT: {timeout_seconds}\n"
+            f"STDOUT:\n{stdout or '(empty)'}\n"
+            f"STDERR:\n{stderr or '(empty)'}"
+        )
+
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 def run_command(command):
     try:
         result = subprocess.run(
@@ -122,6 +836,196 @@ def git_log():
     return run_command("git log --oneline -10")
 
 
+def git_push(remote="", branch=""):
+    remote = remote.strip()
+    branch = branch.strip()
+
+    try:
+        if not branch:
+            current = subprocess.run(
+                ["git", "branch", "--show-current"],
+                text=True,
+                capture_output=True,
+            )
+
+            if current.returncode != 0:
+                return (
+                    f"EXIT_CODE: {current.returncode}\n"
+                    f"{current.stderr.strip() or '(no output)'}"
+                )
+
+            branch = current.stdout.strip()
+
+        if not branch:
+            return "ERROR: unable to determine current branch"
+
+        if not remote:
+            remote = "origin"
+
+        result = subprocess.run(
+            ["git", "push", remote, branch],
+            text=True,
+            capture_output=True,
+        )
+
+        output = result.stdout
+
+        if result.stderr:
+            output += "\n" + result.stderr
+
+        return (
+            f"EXIT_CODE: {result.returncode}\n"
+            f"{output.strip() or '(no output)'}"
+        )
+
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+
+def git_stage(path):
+    """
+    Stage one explicit path.
+
+    Deliberately accepts only one path per call so the agent does not
+    accidentally stage unrelated/untracked files with `git add .`.
+    """
+    import subprocess
+
+    path = str(path).strip()
+
+    if not path:
+        return "ERROR: path is required"
+
+    if path in {".", "./", "*", "-A", "--all"}:
+        return "ERROR: broad staging is not allowed; stage explicit files only"
+
+    result = subprocess.run(
+        ["git", "add", "--", path],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    if result.returncode != 0:
+        return (
+            "ERROR: git stage failed\n"
+            + result.stderr.strip()
+        )
+
+    return f"GIT_STAGE: SUCCESS\nPATH: {path}"
+
+
+def git_head_sha():
+    """Return the exact current Git HEAD SHA."""
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    if result.returncode != 0:
+        return (
+            "ERROR: unable to determine Git HEAD\n"
+            + result.stderr.strip()
+        )
+
+    return result.stdout.strip()
+
+
+def git_commit(message):
+    message = message.strip()
+
+    if not message:
+        return "ERROR: commit message cannot be empty"
+
+    try:
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            text=True,
+            capture_output=True,
+        )
+
+        if staged.returncode == 0:
+            return "ERROR: no staged changes to commit"
+
+        if staged.returncode != 1:
+            return (
+                "ERROR: unable to determine staged changes\n"
+                + staged.stderr.strip()
+            )
+
+        result = subprocess.run(
+            ["git", "commit", "-m", message],
+            text=True,
+            capture_output=True,
+        )
+
+        output = result.stdout
+
+        if result.stderr:
+            output += "\n" + result.stderr
+
+        return (
+            f"EXIT_CODE: {result.returncode}\n"
+            f"{output.strip() or '(no output)'}"
+        )
+
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+def git_create_branch(branch):
+    branch = branch.strip()
+
+    if not branch:
+        return "ERROR: branch name cannot be empty"
+
+    if any(char in branch for char in [" ", "~", "^", ":", "?", "*", "[", "\\"]):
+        return f"ERROR: invalid branch name: {branch}"
+
+    try:
+        check = subprocess.run(
+            ["git", "check-ref-format", "--branch", branch],
+            text=True,
+            capture_output=True,
+        )
+
+        if check.returncode != 0:
+            return f"ERROR: invalid branch name: {branch}"
+
+        existing = subprocess.run(
+            ["git", "rev-parse", "--verify", f"refs/heads/{branch}"],
+            text=True,
+            capture_output=True,
+        )
+
+        if existing.returncode == 0:
+            return f"ERROR: branch already exists: {branch}"
+
+        result = subprocess.run(
+            ["git", "switch", "-c", branch],
+            text=True,
+            capture_output=True,
+        )
+
+        output = result.stdout
+
+        if result.stderr:
+            output += "\n" + result.stderr
+
+        return (
+            f"EXIT_CODE: {result.returncode}\n"
+            f"{output.strip() or '(no output)'}"
+        )
+
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 def github_repo_info(repo=""):
     if repo:
         command = f"gh repo view {repo} --json nameWithOwner,description,defaultBranchRef,isPrivate,url"
@@ -144,6 +1048,68 @@ def github_workflow_runs(repo="", limit="10"):
     return run_command(command)
 
 
+def github_pr_create(title, body="", base="", head="", repo=""):
+    title = title.strip()
+    body = body.strip()
+    base = base.strip()
+    head = head.strip()
+    repo = repo.strip()
+
+    if not title:
+        return "ERROR: PR title cannot be empty"
+
+    try:
+        if not head:
+            current = subprocess.run(
+                ["git", "branch", "--show-current"],
+                text=True,
+                capture_output=True,
+            )
+
+            if current.returncode != 0:
+                return (
+                    f"EXIT_CODE: {current.returncode}\n"
+                    f"{current.stderr.strip() or '(no output)'}"
+                )
+
+            head = current.stdout.strip()
+
+        if not head:
+            return "ERROR: unable to determine current branch"
+
+        command = ["gh", "pr", "create", "--title", title]
+
+        if body:
+            command.extend(["--body", body])
+
+        if base:
+            command.extend(["--base", base])
+
+        command.extend(["--head", head])
+
+        if repo:
+            command.extend(["--repo", repo])
+
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+        )
+
+        output = result.stdout
+
+        if result.stderr:
+            output += "\n" + result.stderr
+
+        return (
+            f"EXIT_CODE: {result.returncode}\n"
+            f"{output.strip() or '(no output)'}"
+        )
+
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
 def github_workflow_run(workflow, repo="", ref=""):
     command = f"gh workflow run {workflow}"
 
@@ -164,6 +1130,705 @@ def github_workflow_status(run_id, repo=""):
 
     return run_command(command)
 
+
+
+
+
+
+
+def github_repair_context(
+    commit_sha,
+    repo="",
+    workflow="agent-build-test.yml",
+    branch="",
+):
+    """
+    Produce a compact, machine-readable repair context for the Agent.
+
+    The context contains the exact commit, workflow run and failure logs.
+    It does not edit files or commit anything.
+    """
+    import json
+
+    lookup = github_workflow_run_for_commit(
+        commit_sha=commit_sha,
+        repo=repo,
+        workflow=workflow,
+        branch=branch,
+    )
+
+    try:
+        data = json.loads(lookup)
+    except json.JSONDecodeError:
+        return lookup
+
+    if data.get("status") != "FOUND":
+        return json.dumps(data, indent=2)
+
+    run = data["run"]
+    run_id = run["databaseId"]
+
+    # Never diagnose a queued/in-progress run as a failure.
+    # Wait for the exact run to finish first.
+    if run.get("status") != "completed":
+        wait_result = github_workflow_wait(
+            str(run_id),
+            repo=data["repo"],
+            timeout="300",
+            interval="5",
+        )
+
+        if isinstance(wait_result, str) and wait_result.startswith("ERROR:"):
+            return json.dumps({
+                "repair_context": True,
+                "repository": data["repo"],
+                "workflow": data["workflow"],
+                "commit_sha": commit_sha,
+                "run_id": run_id,
+                "status": "WAIT_ERROR",
+                "error": wait_result,
+                "next_action": "STOP",
+            }, indent=2, ensure_ascii=False)
+
+    result = github_workflow_result(
+        str(run_id),
+        repo=data["repo"],
+        include_logs="true",
+    )
+
+    try:
+        result_data = json.loads(result)
+    except json.JSONDecodeError:
+        result_data = {
+            "failed_logs": result,
+        }
+
+    conclusion = result_data.get(
+        "conclusion",
+        run.get("conclusion"),
+    )
+
+    run_status = result_data.get(
+        "status",
+        run.get("status"),
+    )
+
+    context = {
+        "repair_context": True,
+        "repository": data["repo"],
+        "workflow": data["workflow"],
+        "commit_sha": commit_sha,
+        "run_id": run_id,
+        "run_url": run.get("url", ""),
+        "head_branch": run.get("headBranch", ""),
+        "status": run_status,
+        "conclusion": conclusion,
+        "failed_logs": result_data.get("failed_logs", ""),
+    }
+
+    if conclusion == "success":
+        context["next_action"] = "DONE"
+    else:
+        context["next_action"] = "ANALYZE_AND_REPAIR"
+
+    return json.dumps(
+        context,
+        indent=2,
+        ensure_ascii=False,
+    )
+
+def github_workflow_run_for_commit(
+    commit_sha,
+    repo="",
+    workflow="agent-build-test.yml",
+    branch="",
+    timeout="180",
+    interval="5",
+):
+    """Find and optionally wait for an exact-SHA GitHub Actions run.
+
+    Important:
+    A workflow file may exist only on a feature branch and therefore
+    cannot always be resolved through `gh run list --workflow FILE`,
+    because GitHub CLI may resolve workflow metadata from the default
+    branch.
+
+    This function therefore searches runs by exact commit SHA first,
+    then filters the returned run metadata locally.
+    """
+
+    import json
+    import re
+    import subprocess
+    import time
+    from pathlib import Path
+
+    sha = str(commit_sha).strip()
+    workflow_filter = str(workflow or "").strip()
+    branch_filter = str(branch or "").strip()
+
+    if not sha:
+        return "ERROR: commit_sha is required"
+
+    cmd = [
+        "gh",
+        "run",
+        "list",
+        "--commit",
+        sha,
+        "--limit",
+        "100",
+        "--json",
+        (
+            "databaseId,status,conclusion,headSha,"
+            "headBranch,name,workflowName,url"
+        ),
+    ]
+
+    if repo:
+        cmd += ["--repo", repo]
+
+    if branch_filter:
+        cmd += ["--branch", branch_filter]
+
+    deadline = time.time() + int(timeout)
+    sleep_interval = max(1, int(interval))
+
+    def workflow_matches(run):
+        if not workflow_filter:
+            return True
+
+        wanted = workflow_filter.lower()
+
+        candidates = {
+            str(run.get("name") or "").lower(),
+            str(run.get("workflowName") or "").lower(),
+        }
+
+        # Filename-friendly matching:
+        # android-fixture-ci.yml
+        # Android Fixture CI
+        stem = Path(workflow_filter).stem.lower()
+
+        normalized_stem = (
+            stem.replace("-", " ")
+            .replace("_", " ")
+            .strip()
+        )
+
+        for value in list(candidates):
+            candidates.add(
+                value.replace("-", " ")
+                .replace("_", " ")
+                .strip()
+            )
+
+        if wanted in candidates:
+            return True
+
+        if stem in candidates:
+            return True
+
+        if normalized_stem in candidates:
+            return True
+
+        # Allow a workflow filename/path to match its display-name
+        # tokens, e.g. android-fixture-ci.yml -> Android Fixture CI.
+        wanted_tokens = {
+            token
+            for token in re.split(
+                r"[^a-z0-9]+",
+                stem,
+            )
+            if token
+        }
+
+        if wanted_tokens:
+            for value in candidates:
+                value_tokens = {
+                    token
+                    for token in re.split(
+                        r"[^a-z0-9]+",
+                        value,
+                    )
+                    if token
+                }
+
+                if wanted_tokens == value_tokens:
+                    return True
+
+        return False
+
+    last_runs = []
+
+    while True:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            return (
+                "ERROR: gh run list failed\n"
+                + result.stderr.strip()
+            )
+
+        try:
+            runs = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            return (
+                "ERROR: invalid gh run list JSON: "
+                + str(exc)
+            )
+
+        last_runs = runs
+
+        exact = [
+            run
+            for run in runs
+            if str(run.get("headSha") or "") == sha
+            and workflow_matches(run)
+        ]
+
+        if exact:
+            run = exact[0]
+
+            status = str(run.get("status") or "")
+            run_id = run.get("databaseId")
+
+            if status == "completed":
+                return json.dumps(
+                    {
+                        "run_id": run_id,
+                        "status": status,
+                        "conclusion": run.get("conclusion"),
+                        "head_sha": run.get("headSha"),
+                        "head_branch": run.get("headBranch"),
+                        "name": (
+                            run.get("workflowName")
+                            or run.get("name")
+                        ),
+                        "url": run.get("url"),
+                    },
+                    indent=2,
+                )
+
+            if time.time() >= deadline:
+                return json.dumps(
+                    {
+                        "run_id": run_id,
+                        "status": status,
+                        "conclusion": run.get("conclusion"),
+                        "head_sha": run.get("headSha"),
+                        "head_branch": run.get("headBranch"),
+                        "name": (
+                            run.get("workflowName")
+                            or run.get("name")
+                        ),
+                        "url": run.get("url"),
+                        "timed_out": True,
+                    },
+                    indent=2,
+                )
+
+        if time.time() >= deadline:
+            return json.dumps(
+                {
+                    "run_id": None,
+                    "status": "not_found",
+                    "commit_sha": sha,
+                    "workflow_filter": workflow_filter,
+                    "branch": branch_filter,
+                    "runs_seen": last_runs,
+                },
+                indent=2,
+            )
+
+        time.sleep(sleep_interval)
+
+def github_repair_loop(
+    repo="",
+    branch="",
+    workflow="agent-build-test.yml",
+    max_iterations="3",
+    wait_timeout="300",
+):
+    """
+    Bounded GitHub Actions repair-loop coordinator.
+
+    This coordinator observes workflow results and returns structured
+    repair context. It deliberately does not modify source code itself.
+    """
+    import json
+    import subprocess
+    import time
+
+    try:
+        max_iter = int(max_iterations)
+    except ValueError:
+        return "ERROR: max_iterations must be numeric"
+
+    try:
+        timeout = int(wait_timeout)
+    except ValueError:
+        return "ERROR: wait_timeout must be numeric"
+
+    if max_iter < 1 or max_iter > 10:
+        return "ERROR: max_iterations must be between 1 and 10"
+
+    if timeout < 30 or timeout > 1800:
+        return "ERROR: wait_timeout must be between 30 and 1800 seconds"
+
+    if not repo:
+        repo_result = subprocess.run(
+            ["gh", "repo", "view", "--json", "nameWithOwner"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        if repo_result.returncode != 0:
+            return (
+                "ERROR: unable to determine repository\n"
+                + repo_result.stderr.strip()
+            )
+
+        try:
+            repo = json.loads(repo_result.stdout)["nameWithOwner"]
+        except Exception as exc:
+            return f"ERROR: invalid repository metadata: {exc}"
+
+    if not branch:
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        if branch_result.returncode != 0:
+            return "ERROR: unable to determine current branch"
+
+        branch = branch_result.stdout.strip()
+
+    if not branch:
+        return "ERROR: branch is required"
+
+    # Find the latest workflow run belonging to this exact branch.
+    result = subprocess.run(
+        [
+            "gh", "run", "list",
+            "--repo", repo,
+            "--workflow", workflow,
+            "--branch", branch,
+            "--limit", "1",
+            "--json",
+            "databaseId,status,conclusion,url,name,headBranch,headSha",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    if result.returncode != 0:
+        return (
+            "ERROR: unable to list workflow runs\n"
+            + result.stderr.strip()
+        )
+
+    try:
+        runs = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return f"ERROR: invalid workflow JSON\n{result.stdout}"
+
+    if not runs:
+        return json.dumps({
+            "status": "NO_RUN",
+            "repo": repo,
+            "branch": branch,
+            "workflow": workflow,
+            "max_iterations": max_iter,
+        }, indent=2)
+
+    run = runs[0]
+
+    run_id = run.get("databaseId")
+
+    if not run_id:
+        return "ERROR: workflow run has no databaseId"
+
+    # Wait for an active run to finish.
+    deadline = time.time() + timeout
+
+    while run.get("status") not in ("completed", "cancelled"):
+        if time.time() >= deadline:
+            return json.dumps({
+                "status": "TIMEOUT",
+                "repo": repo,
+                "branch": branch,
+                "workflow": workflow,
+                "run": run,
+            }, indent=2)
+
+        time.sleep(5)
+
+        poll = subprocess.run(
+            [
+                "gh", "run", "view", str(run_id),
+                "--repo", repo,
+                "--json",
+                "databaseId,status,conclusion,url,name,headBranch,headSha",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        if poll.returncode != 0:
+            return (
+                "ERROR: workflow polling failed\n"
+                + poll.stderr.strip()
+            )
+
+        try:
+            run = json.loads(poll.stdout)
+        except json.JSONDecodeError:
+            return f"ERROR: invalid workflow status JSON\n{poll.stdout}"
+
+    conclusion = run.get("conclusion")
+
+    result_data = {
+        "status": "PASS" if conclusion == "success" else "FAIL",
+        "repo": repo,
+        "branch": branch,
+        "workflow": workflow,
+        "run": run,
+        "repair_iteration": 1,
+        "max_iterations": max_iter,
+    }
+
+    if conclusion != "success":
+        failure_result = github_workflow_result(
+            str(run_id),
+            repo=repo,
+            include_logs="true",
+        )
+
+        try:
+            failure_data = json.loads(failure_result)
+        except json.JSONDecodeError:
+            failure_data = {
+                "failed_logs": failure_result,
+            }
+
+        result_data["failure"] = {
+            "conclusion": conclusion,
+            "failed_logs": failure_data.get("failed_logs", ""),
+        }
+
+        result_data["next_action"] = (
+            "READ_FAILURE_LOG_AND_REPAIR"
+        )
+    else:
+        result_data["next_action"] = "DONE"
+
+    return json.dumps(result_data, indent=2, ensure_ascii=False)
+
+def github_workflow_artifacts(run_id, repo="", name=""):
+    """List artifacts belonging to a GitHub Actions workflow run."""
+    import json
+    import subprocess
+
+    if not str(run_id).strip().isdigit():
+        return "ERROR: run_id must be numeric"
+
+    if repo:
+        repo_name = repo
+    else:
+        repo_cmd = subprocess.run(
+            ["gh", "repo", "view", "--json", "nameWithOwner"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if repo_cmd.returncode != 0:
+            return (
+                "ERROR: unable to determine repository\n"
+                + repo_cmd.stderr.strip()
+            )
+        try:
+            repo_name = json.loads(repo_cmd.stdout)["nameWithOwner"]
+        except Exception as exc:
+            return f"ERROR: invalid repository metadata: {exc}"
+
+    endpoint = f"repos/{repo_name}/actions/runs/{run_id}/artifacts"
+
+    if name:
+        endpoint += "?name=" + str(name)
+
+    result = subprocess.run(
+        ["gh", "api", endpoint],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    if result.returncode != 0:
+        return (
+            f"ERROR: artifact lookup failed\n"
+            f"exit_code={result.returncode}\n"
+            f"{result.stderr.strip()}"
+        )
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return f"ERROR: invalid artifact JSON\n{result.stdout}"
+
+    artifacts = []
+
+    for artifact in data.get("artifacts", []):
+        artifacts.append({
+            "id": artifact.get("id"),
+            "name": artifact.get("name"),
+            "size_in_bytes": artifact.get("size_in_bytes"),
+            "expired": artifact.get("expired"),
+            "created_at": artifact.get("created_at"),
+            "expires_at": artifact.get("expires_at"),
+            "updated_at": artifact.get("updated_at"),
+            "digest": artifact.get("digest"),
+        })
+
+    return json.dumps({
+        "run_id": int(run_id),
+        "repository": repo_name,
+        "total_count": len(artifacts),
+        "artifacts": artifacts,
+    }, indent=2, ensure_ascii=False)
+
+
+def github_workflow_download_artifact(
+    run_id,
+    artifact_name="",
+    repo="",
+    destination=".",
+):
+    """Download a GitHub Actions artifact from a workflow run."""
+    import os
+    import subprocess
+
+    if not str(run_id).strip().isdigit():
+        return "ERROR: run_id must be numeric"
+
+    if not str(artifact_name).strip():
+        return "ERROR: artifact_name is required"
+
+    destination = os.path.abspath(os.path.expanduser(str(destination)))
+    os.makedirs(destination, exist_ok=True)
+
+    cmd = [
+        "gh", "run", "download", str(run_id),
+        "--name", str(artifact_name),
+        "--dir", destination,
+    ]
+
+    if repo:
+        cmd.extend(["--repo", repo])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        return "ERROR: artifact download timed out"
+
+    if result.returncode != 0:
+        return (
+            f"ERROR: artifact download failed\n"
+            f"exit_code={result.returncode}\n"
+            f"{result.stderr.strip()}"
+        )
+
+    return (
+        "ARTIFACT_DOWNLOAD: SUCCESS\n"
+        f"run_id={run_id}\n"
+        f"artifact={artifact_name}\n"
+        f"destination={destination}\n"
+        f"{result.stdout.strip()}"
+    )
+
+def github_workflow_result(run_id, repo="", include_logs="true"):
+    """Return structured result and failed logs for a GitHub Actions run."""
+    import json
+    import subprocess
+
+    if not str(run_id).strip().isdigit():
+        return "ERROR: run_id must be numeric"
+
+    cmd = [
+        "gh", "run", "view", str(run_id),
+        "--json", "databaseId,name,status,conclusion,url,headBranch,headSha",
+    ]
+
+    if repo:
+        cmd.extend(["--repo", repo])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return "ERROR: GitHub CLI timed out"
+
+    if result.returncode != 0:
+        return (
+            f"ERROR: gh run view failed\n"
+            f"HTTP/exit: {result.returncode}\n"
+            f"{result.stderr.strip()}"
+        )
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return f"ERROR: invalid JSON from gh run view\n{result.stdout}"
+
+    conclusion = data.get("conclusion")
+
+    if str(include_logs).lower() in ("true", "1", "yes") and conclusion not in (
+        None, "", "success"
+    ):
+        log_cmd = [
+            "gh", "run", "view", str(run_id),
+            "--log-failed",
+        ]
+
+        if repo:
+            log_cmd.extend(["--repo", repo])
+
+        try:
+            logs = subprocess.run(
+                log_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            data["failed_logs"] = "ERROR: failed-log retrieval timed out"
+        else:
+            data["failed_logs"] = (
+                logs.stdout
+                if logs.stdout.strip()
+                else logs.stderr.strip()
+            )
+
+    return json.dumps(data, indent=2, ensure_ascii=False)
 
 def github_workflow_wait(run_id, repo="", timeout="300", interval="5"):
     try:
@@ -243,21 +1908,179 @@ def github_workflow_wait(run_id, repo="", timeout="300", interval="5"):
         time.sleep(interval_seconds)
 
 
+
+def github_project_cycle_context(
+    commit_sha,
+    path=".",
+    repo="",
+    workflow="",
+    branch="",
+    timeout="180",
+    interval="5",
+):
+    """Return one unified autonomous project/CI decision context.
+
+    Combines:
+    - project strategy
+    - exact commit-scoped workflow lookup
+    - CI conclusion
+    - failure logs
+    - expected project artifacts
+    - actual GitHub Actions artifacts
+
+    next_action is one of:
+    WAIT
+    ANALYZE_AND_REPAIR
+    VERIFY_ARTIFACT
+    DONE
+    """
+
+    import json
+
+    sha = str(commit_sha or "").strip()
+
+    if not sha:
+        return "ERROR: commit_sha is required"
+
+    try:
+        strategy = json.loads(project_strategy(path))
+    except Exception as exc:
+        return (
+            "ERROR: unable to determine project strategy: "
+            + str(exc)
+        )
+
+    expected_artifacts = strategy.get("artifacts", []) or []
+
+    run_raw = github_workflow_run_for_commit(
+        commit_sha=sha,
+        repo=repo,
+        workflow=workflow,
+        branch=branch,
+        timeout=timeout,
+        interval=interval,
+    )
+
+    if str(run_raw).startswith("ERROR:"):
+        return run_raw
+
+    try:
+        run = json.loads(run_raw)
+    except Exception as exc:
+        return (
+            "ERROR: invalid workflow-run context: "
+            + str(exc)
+        )
+
+    run_id = run.get("run_id")
+    status = run.get("status")
+    conclusion = run.get("conclusion")
+
+    context = {
+        "commit_sha": sha,
+        "path": path,
+        "repository": repo,
+        "workflow_filter": workflow,
+        "branch": branch,
+        "strategy": strategy,
+        "run": run,
+        "expected_artifacts": expected_artifacts,
+        "actual_artifacts": [],
+        "failed_logs": "",
+        "next_action": None,
+    }
+
+    if not run_id or status in {
+        "not_found",
+        "queued",
+        "in_progress",
+        "waiting",
+        "requested",
+        "pending",
+    }:
+        context["next_action"] = "WAIT"
+        return json.dumps(context, indent=2)
+
+    if status != "completed":
+        context["next_action"] = "WAIT"
+        return json.dumps(context, indent=2)
+
+    if conclusion != "success":
+        result_raw = github_workflow_result(
+            run_id=str(run_id),
+            repo=repo,
+            include_logs="true",
+        )
+
+        context["failed_logs"] = result_raw
+        context["next_action"] = "ANALYZE_AND_REPAIR"
+
+        return json.dumps(context, indent=2)
+
+    # Successful CI.
+    if expected_artifacts:
+        artifact_raw = github_workflow_artifacts(
+            run_id=str(run_id),
+            repo=repo,
+        )
+
+        try:
+            artifact_data = json.loads(artifact_raw)
+            actual = artifact_data.get("artifacts", []) or []
+        except Exception:
+            actual = []
+
+        context["actual_artifacts"] = actual
+
+        live = [
+            item
+            for item in actual
+            if not item.get("expired")
+            and int(item.get("size_in_bytes", 0) or 0) > 0
+        ]
+
+        if not live:
+            context["next_action"] = "VERIFY_ARTIFACT"
+            return json.dumps(context, indent=2)
+
+    context["next_action"] = "DONE"
+
+    return json.dumps(context, indent=2)
+
+
 TOOLS = {
+    "github_project_cycle_context": github_project_cycle_context,
     "list_files": list_files,
     "read_file": read_file,
     "search_files": search_files,
     "write_file": write_file,
     "run_command": run_command,
+    "detect_project": detect_project,
+    "run_test": run_test,
     "git_status": git_status,
     "git_diff": git_diff,
     "git_log": git_log,
+    "git_create_branch": git_create_branch,
+    "git_commit": git_commit,
+    "git_push": git_push,
     "github_repo_info": github_repo_info,
     "github_workflows": github_workflows,
     "github_workflow_runs": github_workflow_runs,
     "github_workflow_run": github_workflow_run,
+    "github_pr_create": github_pr_create,
     "github_workflow_status": github_workflow_status,
     "github_workflow_wait": github_workflow_wait,
+    "github_workflow_result": github_workflow_result,
+    "github_workflow_artifacts": github_workflow_artifacts,
+    "github_repair_loop": github_repair_loop,
+    "github_workflow_run_for_commit": github_workflow_run_for_commit,
+    "github_repair_context": github_repair_context,
+    "github_workflow_download_artifact": github_workflow_download_artifact,
+    "git_stage": git_stage,
+    "git_head_sha": git_head_sha,
+    "project_strategy": project_strategy,
+    "project_ci_workflow": project_ci_workflow,
+    "write_project_ci_workflow": write_project_ci_workflow,
 }
 
 
